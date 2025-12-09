@@ -161,13 +161,8 @@ export class MCPConnection extends EventEmitter {
     ): Promise<UndiciResponse> {
       const requestHeaders = getHeaders();
       const effectiveTimeout = timeout || DEFAULT_TIMEOUT;
-      // bodyTimeout: 0 disables body timeout for SSE/streaming responses.
-      // SSE streams are long-lived and data arrives sporadically (e.g., every 10s for progress).
-      // undici's bodyTimeout doesn't properly reset when SSE event data is received,
-      // causing premature aborts. The MCP SDK's resetTimeoutOnProgress mechanism
-      // handles application-level timeouts correctly instead.
       const agent = new Agent({
-        bodyTimeout: 0,
+        bodyTimeout: effectiveTimeout,
         headersTimeout: effectiveTimeout,
       });
       if (!requestHeaders) {
@@ -265,11 +260,8 @@ export class MCPConnection extends EventEmitter {
             eventSourceInit: {
               fetch: (url, init) => {
                 const fetchHeaders = new Headers(Object.assign({}, init?.headers, headers));
-                // bodyTimeout: 0 disables body timeout for SSE streams.
-                // SSE is long-lived and data arrives sporadically. The MCP SDK's
-                // resetTimeoutOnProgress handles application-level timeouts.
                 const agent = new Agent({
-                  bodyTimeout: 0,
+                  bodyTimeout: timeoutValue,
                   headersTimeout: timeoutValue,
                 });
                 return undiciFetch(url, {
