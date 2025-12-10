@@ -227,9 +227,15 @@ Please follow these instructions when using tools from the respective MCP server
         connection.setRequestHeaders(currentOptions.headers || {});
       }
 
-      // Use configured timeout or fallback to 10 minutes for long-running MCP tools
-      const effectiveTimeout = connection.timeout ?? 600000;
-      logger.debug(`${logPrefix}[${toolName}] Using timeout: ${effectiveTimeout}ms`);
+      // Build request options with proper timeout handling
+      // The MCP SDK defaults to 60 seconds, but long-running tools need more time.
+      // Use connection.timeout if configured, otherwise default to 10 minutes.
+      // See: https://github.com/modelcontextprotocol/typescript-sdk/issues/245
+      const DEFAULT_MCP_TIMEOUT = 600000; // 10 minutes
+      const requestTimeout = connection.timeout ?? DEFAULT_MCP_TIMEOUT;
+
+      // Extract only the signal from options to avoid overriding our timeout settings
+      const { signal } = options ?? {};
 
       const result = await connection.client.request(
         {
@@ -241,14 +247,14 @@ Please follow these instructions when using tools from the respective MCP server
         },
         CallToolResultSchema,
         {
-          timeout: effectiveTimeout,
+          timeout: requestTimeout,
           resetTimeoutOnProgress: true,
           onprogress: (progress) => {
-            logger.debug(
+            logger.info(
               `${logPrefix}[${toolName}] Progress: ${progress.progress}/${progress.total}${progress.message ? ` - ${progress.message}` : ''}`,
             );
           },
-          ...options,
+          signal,
         },
       );
       if (userId) {
