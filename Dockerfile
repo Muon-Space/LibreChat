@@ -25,23 +25,25 @@ COPY --chown=node:node client/package.json ./client/package.json
 COPY --chown=node:node packages/data-provider/package.json ./packages/data-provider/package.json
 COPY --chown=node:node packages/data-schemas/package.json ./packages/data-schemas/package.json
 COPY --chown=node:node packages/api/package.json ./packages/api/package.json
+COPY --chown=node:node packages/client/package.json ./packages/client/package.json
 
 RUN \
     # Allow mounting of these files, which have no default
     touch .env ; \
     # Create directories for the volumes to inherit the correct permissions
-    mkdir -p /app/client/public/images /app/api/logs /app/uploads ; \
-    npm config set fetch-retry-maxtimeout 600000 ; \
-    npm config set fetch-retries 5 ; \
-    npm config set fetch-retry-mintimeout 15000 ; \
+    mkdir -p /app/client/public/images /app/api/logs /app/uploads
+
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    npm config set fetch-retry-maxtimeout 600000 && \
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 15000 && \
     npm ci --no-audit
 
 COPY --chown=node:node . .
 
-RUN \
-    # React client build
-    NODE_OPTIONS="--max-old-space-size=2048" npm run frontend; \
-    npm prune --production; \
+# Build frontend and packages (use && to fail fast on errors)
+RUN NODE_OPTIONS="--max-old-space-size=8192" npm run frontend && \
+    npm prune --production && \
     npm cache clean --force
 
 # Node API setup
