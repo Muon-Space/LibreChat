@@ -67,7 +67,7 @@ function isStreamableHTTPOptions(options: t.MCPOptions): options is t.Streamable
 }
 
 const FIVE_MINUTES = 5 * 60 * 1000;
-const DEFAULT_TIMEOUT = 60000;
+const DEFAULT_TIMEOUT = 600000; // 10 minutes - needed for long-running MCP tool calls with SSE streaming
 
 interface MCPConnectionParams {
   serverName: string;
