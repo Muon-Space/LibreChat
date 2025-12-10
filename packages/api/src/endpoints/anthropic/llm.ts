@@ -1,4 +1,5 @@
 import { Dispatcher, ProxyAgent } from 'undici';
+import type { ClientOptions } from '@anthropic-ai/sdk';
 import { AnthropicClientOptions } from '@librechat/agents';
 import { anthropicSettings, removeNullishValues, AuthKeys } from 'librechat-data-provider';
 import type {
@@ -130,8 +131,12 @@ function getLLMConfig(
     );
     requestOptions.model = deploymentName;
 
-    requestOptions.createClient = () =>
-      createAnthropicVertexClient(creds, requestOptions.clientOptions, options.vertexOptions);
+    requestOptions.createClient = (langchainOptions?: ClientOptions) =>
+      createAnthropicVertexClient(
+        creds,
+        { ...requestOptions.clientOptions, ...langchainOptions } as ClientOptions,
+        options.vertexOptions,
+      );
   } else if (apiKey) {
     // Direct API configuration
     requestOptions.apiKey = apiKey;
