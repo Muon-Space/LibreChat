@@ -248,7 +248,8 @@ Please follow these instructions when using tools from the respective MCP server
         },
         CallToolResultSchema,
         {
-          timeout: requestTimeout,
+          maxTotalTimeout: 600000,
+          timeout: 600000,
           resetTimeoutOnProgress: true,
           onprogress: (progress) => {
             logger.info(
