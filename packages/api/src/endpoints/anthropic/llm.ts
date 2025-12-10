@@ -131,12 +131,27 @@ function getLLMConfig(
     );
     requestOptions.model = deploymentName;
 
-    requestOptions.createClient = (langchainOptions?: ClientOptions) =>
-      createAnthropicVertexClient(
+    requestOptions.createClient = (langchainOptions?: ClientOptions) => {
+      // Filter out nullish apiKey/authToken from LangChain options
+      // LangChain passes apiKey: this.apiKey which may be undefined for Vertex AI
+      // Keep them if they have actual values (for users with API keys)
+      const filteredLangchainOptions = langchainOptions
+        ? (Object.fromEntries(
+            Object.entries(langchainOptions).filter(([key, value]) => {
+              // Only filter out apiKey/authToken if they are nullish
+              if ((key === 'apiKey' || key === 'authToken') && value == null) {
+                return false;
+              }
+              return true;
+            }),
+          ) as ClientOptions)
+        : undefined;
+      return createAnthropicVertexClient(
         creds,
-        { ...requestOptions.clientOptions, ...langchainOptions } as ClientOptions,
+        { ...requestOptions.clientOptions, ...filteredLangchainOptions },
         options.vertexOptions,
       );
+    };
   } else if (apiKey) {
     // Direct API configuration
     requestOptions.apiKey = apiKey;
