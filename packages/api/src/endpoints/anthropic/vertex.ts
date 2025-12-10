@@ -82,9 +82,9 @@ export function isAnthropicVertexCredentials(credentials: AnthropicCredentials):
  * Vertex AI rejects prompt-caching-2024-07-31 but we use 'prompt-caching-vertex' as a
  * marker to trigger cache_control application in the agents package.
  */
-function filterVertexHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
+function filterVertexHeaders(headers?: Record<string, string>): Record<string, string> {
   if (!headers) {
-    return undefined;
+    return {};
   }
 
   const filteredHeaders = { ...headers };
@@ -126,7 +126,7 @@ function filterVertexHeaders(headers?: Record<string, string>): Record<string, s
     }
   }
 
-  return Object.keys(filteredHeaders).length > 0 ? filteredHeaders : undefined;
+  return filteredHeaders;
 }
 
 /**
