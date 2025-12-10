@@ -168,6 +168,44 @@ export function getVertexDeploymentName(
   return modelConfig.deploymentName || vertexConfig.deploymentName || modelName;
 }
 
+/** Options that are safe to pass to Vertex AI client */
+const VERTEX_SAFE_OPTIONS = new Set([
+  'timeout',
+  'maxRetries',
+  'defaultHeaders',
+  'defaultQuery',
+  'dangerouslyAllowBrowser',
+  'fetch',
+  'fetchOptions',
+]);
+
+/**
+ * Filters client options to only include those safe for Vertex AI.
+ * Removes apiKey, authToken, baseURL and other options that conflict with Vertex AI.
+ */
+function filterVertexOptions(options?: ClientOptions): Partial<ClientOptions> | undefined {
+  if (!options) {
+    return undefined;
+  }
+
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(options)) {
+    // Only include safe options that have non-nullish values
+    if (VERTEX_SAFE_OPTIONS.has(key) && value != null) {
+      filtered[key] = value;
+    }
+  }
+
+  // Filter headers specifically
+  if (options.defaultHeaders) {
+    filtered.defaultHeaders = filterVertexHeaders(
+      options.defaultHeaders as Record<string, string> | undefined,
+    );
+  }
+
+  return Object.keys(filtered).length > 0 ? (filtered as Partial<ClientOptions>) : undefined;
+}
+
 /**
  * Creates and configures a Vertex AI client for Anthropic.
  * Supports both YAML configuration and environment variables for region/projectId.
@@ -195,15 +233,8 @@ export function createAnthropicVertexClient(
       ...(projectId && { projectId }),
     });
 
-    // Filter out unsupported anthropic-beta header values for Vertex AI
-    const filteredOptions = options
-      ? {
-          ...options,
-          defaultHeaders: filterVertexHeaders(
-            options.defaultHeaders as Record<string, string> | undefined,
-          ),
-        }
-      : undefined;
+    // Filter options to only include those safe for Vertex AI
+    const filteredOptions = filterVertexOptions(options);
 
     return new AnthropicVertex({
       region: region,
