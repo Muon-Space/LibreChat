@@ -67,14 +67,7 @@ function isStreamableHTTPOptions(options: t.MCPOptions): options is t.Streamable
 }
 
 const FIVE_MINUTES = 5 * 60 * 1000;
-/**
- * Default timeout for HTTP requests to MCP servers.
- * This is used for undici Agent's bodyTimeout and headersTimeout.
- * Set to 10 minutes to support long-running tool operations.
- * Note: This is different from the MCP SDK's request timeout which has
- * its own default of 60 seconds (handled in MCPManager.callTool).
- */
-const DEFAULT_TIMEOUT = 600000; // 10 minutes
+const DEFAULT_TIMEOUT = 60000;
 
 interface MCPConnectionParams {
   serverName: string;
