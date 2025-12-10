@@ -227,6 +227,10 @@ Please follow these instructions when using tools from the respective MCP server
         connection.setRequestHeaders(currentOptions.headers || {});
       }
 
+      // Use configured timeout or fallback to 10 minutes for long-running MCP tools
+      const effectiveTimeout = connection.timeout ?? 600000;
+      logger.debug(`${logPrefix}[${toolName}] Using timeout: ${effectiveTimeout}ms`);
+
       const result = await connection.client.request(
         {
           method: 'tools/call',
@@ -237,7 +241,7 @@ Please follow these instructions when using tools from the respective MCP server
         },
         CallToolResultSchema,
         {
-          timeout: connection.timeout,
+          timeout: effectiveTimeout,
           resetTimeoutOnProgress: true,
           onprogress: (progress) => {
             logger.debug(
