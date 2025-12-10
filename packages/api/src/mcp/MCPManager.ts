@@ -234,36 +234,62 @@ Please follow these instructions when using tools from the respective MCP server
       const DEFAULT_MCP_TIMEOUT = 600000; // 10 minutes
       const requestTimeout = connection.timeout ?? DEFAULT_MCP_TIMEOUT;
 
-      // Extract signal from options, but don't spread other options
-      // to avoid accidentally overriding timeout or resetTimeoutOnProgress
-      const { signal } = options ?? {};
+      // Create a new AbortController for the MCP request.
+      // We DON'T pass the external signal directly to avoid inheriting any
+      // timeout behaviors from the LangChain/LangGraph execution chain.
+      // Instead, we manually link it so user-initiated cancellations still work.
+      const mcpAbortController = new AbortController();
+      const externalSignal = options?.signal;
 
-      const result = await connection.client.request(
-        {
-          method: 'tools/call',
-          params: {
-            name: toolName,
-            arguments: toolArguments,
-          },
-        },
-        CallToolResultSchema,
-        {
-          maxTotalTimeout: 600000,
-          timeout: 600000,
-          resetTimeoutOnProgress: true,
-          onprogress: (progress) => {
-            logger.info(
-              `${logPrefix}[${toolName}] Progress: ${progress.progress}/${progress.total}${progress.message ? ` - ${progress.message}` : ''}`,
-            );
-          },
-          signal,
-        },
-      );
-      if (userId) {
-        this.updateUserLastActivity(userId);
+      // Link the external signal to our controller for user-initiated cancellations
+      let externalAbortHandler: (() => void) | null = null;
+      if (externalSignal) {
+        externalAbortHandler = () => {
+          // Only abort if this was a user-initiated cancellation, not a timeout
+          // AbortSignal.timeout() sets the reason to a TimeoutError
+          const isTimeout =
+            externalSignal.reason?.name === 'TimeoutError' ||
+            externalSignal.reason?.name === 'AbortError';
+          if (!isTimeout) {
+            mcpAbortController.abort(externalSignal.reason);
+          }
+        };
+        externalSignal.addEventListener('abort', externalAbortHandler, { once: true });
       }
-      this.checkIdleConnections();
-      return formatToolContent(result as t.MCPToolCallResponse, provider);
+
+      try {
+        const result = await connection.client.request(
+          {
+            method: 'tools/call',
+            params: {
+              name: toolName,
+              arguments: toolArguments,
+            },
+          },
+          CallToolResultSchema,
+          {
+            maxTotalTimeout: requestTimeout,
+            timeout: requestTimeout,
+            resetTimeoutOnProgress: true,
+            onprogress: (progress) => {
+              logger.info(
+                `${logPrefix}[${toolName}] Progress: ${progress.progress}/${progress.total}${progress.message ? ` - ${progress.message}` : ''}`,
+              );
+            },
+            signal: mcpAbortController.signal,
+          },
+        );
+        if (userId) {
+          this.updateUserLastActivity(userId);
+        }
+        this.checkIdleConnections();
+        return formatToolContent(result as t.MCPToolCallResponse, provider);
+      } finally {
+        // Clean up the external signal listener to prevent memory leaks
+        if (externalSignal && externalAbortHandler) {
+          externalSignal.removeEventListener('abort', externalAbortHandler);
+        }
+      }
     } catch (error) {
       // Log with context and re-throw or handle as needed
       logger.error(`${logPrefix}[${toolName}] Tool call failed`, error);
