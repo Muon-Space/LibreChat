@@ -10,3 +10,4 @@ This fork implements these custom changes:
     - this is built with more optimization for build speeds
 - Updated README.md
 - Added a [hide base models feature](https://github.com/Muon-Space/LibreChat/commit/87a7a8a812be34c1ec6e2ffe88fe0dd24199211c)
+  - based on [this discussion](https://github.com/danny-avila/LibreChat/discussions/10220)
