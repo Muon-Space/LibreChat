@@ -4,6 +4,7 @@ This fork implements these PRs:
 - feat: Gemini Image Generation Tool (Nano Banana) [#10676](https://github.com/danny-avila/LibreChat/pull/10676)
 - feat: Anthropic Vertex AI Support [#10780](https://github.com/danny-avila/LibreChat/pull/10780)
 - feat: add hide "base" models flag to model spec [#10915](https://github.com/danny-avila/LibreChat/pull/10915)
+- fix(mcp): Improve OAuth discovery and error detection for MCP servers [#10920](https://github.com/danny-avila/LibreChat/pull/10920)
 
 This fork implements these custom changes:
 - Removed all workflows
