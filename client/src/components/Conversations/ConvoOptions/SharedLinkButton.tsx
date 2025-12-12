@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { Trans } from 'react-i18next';
 import { QrCode, RotateCw, Trash2 } from 'lucide-react';
 import {
   Button,
@@ -38,6 +39,7 @@ export default function SharedLinkButton({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [announcement, setAnnouncement] = useState('');
   const shareId = share?.shareId ?? '';
 
   const { mutateAsync: mutate, isLoading: isCreateLoading } = useCreateSharedLinkMutation({
@@ -85,6 +87,10 @@ export default function SharedLinkButton({
     const updateShare = await mutateAsync({ shareId });
     const newLink = generateShareLink(updateShare.shareId);
     setSharedLink(newLink);
+    setAnnouncement(localize('com_ui_link_refreshed'));
+    setTimeout(() => {
+      setAnnouncement('');
+    }, 1000);
   };
 
   const createShareLink = async () => {
@@ -129,19 +135,24 @@ export default function SharedLinkButton({
             <TooltipAnchor
               description={localize('com_ui_refresh_link')}
               render={(props) => (
-                <Button
-                  {...props}
-                  onClick={() => updateSharedLink()}
-                  aria-label={localize('com_ui_refresh_link')}
-                  variant="outline"
-                  disabled={isUpdateLoading}
-                >
-                  {isUpdateLoading ? (
-                    <Spinner className="size-4" />
-                  ) : (
-                    <RotateCw className="size-4" />
-                  )}
-                </Button>
+                <>
+                  <span className="sr-only" aria-live="polite" aria-atomic="true">
+                    {announcement}
+                  </span>
+                  <Button
+                    {...props}
+                    onClick={() => updateSharedLink()}
+                    variant="outline"
+                    disabled={isUpdateLoading}
+                    aria-label={localize('com_ui_refresh_link')}
+                  >
+                    {isUpdateLoading ? (
+                      <Spinner className="size-4" />
+                    ) : (
+                      <RotateCw className="size-4" aria-hidden="true" />
+                    )}
+                  </Button>
+                </>
               )}
             />
 
@@ -154,7 +165,7 @@ export default function SharedLinkButton({
                   variant="outline"
                   aria-label={qrCodeLabel}
                 >
-                  <QrCode className="size-4" />
+                  <QrCode className="size-4" aria-hidden="true" />
                 </Button>
               )}
             />
@@ -168,7 +179,7 @@ export default function SharedLinkButton({
                   variant="destructive"
                   aria-label={localize('com_ui_delete')}
                 >
-                  <Trash2 className="size-4" />
+                  <Trash2 className="size-4" aria-hidden="true" />
                 </Button>
               )}
             />
@@ -177,7 +188,7 @@ export default function SharedLinkButton({
         <OGDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
           <OGDialogTemplate
             showCloseButton={false}
-            title={localize('com_ui_delete_shared_link')}
+            title={localize('com_ui_delete_shared_link_heading')}
             className="max-w-[450px]"
             main={
               <>
@@ -187,7 +198,11 @@ export default function SharedLinkButton({
                       htmlFor="dialog-confirm-delete"
                       className="text-left text-sm font-medium"
                     >
-                      {localize('com_ui_delete_confirm')} <strong>&quot;{shareId}&quot;</strong>
+                      <Trans
+                        i18nKey="com_ui_delete_confirm_strong"
+                        values={{ title: shareId }}
+                        components={{ strong: <strong /> }}
+                      />
                     </Label>
                   </div>
                 </div>

@@ -1,8 +1,16 @@
 import { useCallback, useState, useMemo, useEffect } from 'react';
+import { Trans } from 'react-i18next';
 import debounce from 'lodash/debounce';
 import { useRecoilValue } from 'recoil';
 import { Link } from 'react-router-dom';
-import { TrashIcon, MessageSquare, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  TrashIcon,
+  MessageSquare,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ExternalLink,
+} from 'lucide-react';
 import type { SharedLinkItem, SharedLinksListParams } from 'librechat-data-provider';
 import {
   OGDialog,
@@ -13,6 +21,7 @@ import {
   useMediaQuery,
   OGDialogHeader,
   OGDialogTitle,
+  TooltipAnchor,
   DataTable,
   Spinner,
   Button,
@@ -169,6 +178,7 @@ export default function SharedLinks() {
               onClick={() =>
                 handleSort('title', isSorted && sortDirection === 'asc' ? 'desc' : 'asc')
               }
+              aria-label={localize('com_ui_name_sort')}
             >
               {localize('com_ui_name')}
               {isSorted && sortDirection === 'asc' && (
@@ -189,10 +199,14 @@ export default function SharedLinks() {
                 to={`/share/${shareId}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="block truncate text-blue-500 hover:underline"
+                className="group flex items-center gap-1 truncate rounded-sm text-blue-600 underline decoration-1 underline-offset-2 hover:decoration-2 focus:outline-none focus:ring-2 focus:ring-ring"
                 title={title}
               >
-                {title}
+                <span className="truncate">{title}</span>
+                <ExternalLink
+                  className="size-3 flex-shrink-0 opacity-70 group-hover:opacity-100"
+                  aria-hidden="true"
+                />
               </Link>
             </div>
           );
@@ -214,6 +228,7 @@ export default function SharedLinks() {
               onClick={() =>
                 handleSort('createdAt', isSorted && sortDirection === 'asc' ? 'desc' : 'asc')
               }
+              aria-label={localize('com_ui_creation_date_sort')}
             >
               {localize('com_ui_date')}
               {isSorted && sortDirection === 'asc' && (
@@ -245,27 +260,42 @@ export default function SharedLinks() {
         },
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              className="h-8 w-8 p-0 hover:bg-surface-hover"
-              onClick={() => {
-                window.open(`/c/${row.original.conversationId}`, '_blank');
-              }}
-              aria-label={`${localize('com_ui_view_source')} - ${row.original.title || localize('com_ui_untitled')}`}
-            >
-              <MessageSquare className="size-4" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="ghost"
-              className="h-8 w-8 p-0 hover:bg-surface-hover"
-              onClick={() => {
-                setDeleteRow(row.original);
-                setIsDeleteOpen(true);
-              }}
-              aria-label={`${localize('com_ui_delete')} - ${row.original.title || localize('com_ui_untitled')}`}
-            >
-              <TrashIcon className="size-4" aria-hidden="true" />
-            </Button>
+            <TooltipAnchor
+              description={localize('com_ui_open_source_chat_new_tab')}
+              render={
+                <a
+                  href={`/c/${row.original.conversationId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-8 w-8 items-center justify-center rounded-md p-0 transition-colors hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-ring"
+                  aria-label={localize('com_ui_open_source_chat_new_tab_title', {
+                    title: row.original.title || localize('com_ui_untitled'),
+                  })}
+                >
+                  <MessageSquare className="size-4" aria-hidden="true" />
+                </a>
+              }
+            />
+            <TooltipAnchor
+              description={localize('com_ui_delete_shared_link_heading')}
+              render={
+                <Button
+                  variant="ghost"
+                  className="h-8 w-8 p-0 hover:bg-surface-hover"
+                  onClick={() => {
+                    setDeleteRow(row.original);
+                    setIsDeleteOpen(true);
+                  }}
+                  aria-label={localize('com_ui_delete_shared_link', {
+                    title: row.original.title || localize('com_ui_untitled'),
+                  })}
+                  aria-haspopup="dialog"
+                  aria-controls="delete-shared-link-dialog"
+                >
+                  <TrashIcon className="size-4" aria-hidden="true" />
+                </Button>
+              }
+            />
           </div>
         ),
       },
@@ -285,7 +315,7 @@ export default function SharedLinks() {
         </OGDialogTrigger>
 
         <OGDialogContent
-          title={localize('com_nav_my_files')}
+          title={localize('com_nav_shared_links')}
           className="w-11/12 max-w-5xl bg-background text-text-primary shadow-2xl"
         >
           <OGDialogHeader>
@@ -310,14 +340,21 @@ export default function SharedLinks() {
       <OGDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
         <OGDialogTemplate
           showCloseButton={false}
-          title={localize('com_ui_delete_shared_link')}
+          title={localize('com_ui_delete_shared_link_heading')}
           className="max-w-[450px]"
           main={
             <>
-              <div className="flex w-full flex-col items-center gap-2">
+              <div
+                id="delete-shared-link-dialog"
+                className="flex w-full flex-col items-center gap-2"
+              >
                 <div className="grid w-full items-center gap-2">
                   <Label htmlFor="dialog-confirm-delete" className="text-left text-sm font-medium">
-                    {localize('com_ui_delete_confirm')} <strong>{deleteRow?.title}</strong>
+                    <Trans
+                      i18nKey="com_ui_delete_confirm_strong"
+                      values={{ title: deleteRow?.title }}
+                      components={{ strong: <strong /> }}
+                    />
                   </Label>
                 </div>
               </div>
