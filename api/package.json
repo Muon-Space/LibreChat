@@ -1,6 +1,6 @@
 {
   "name": "@librechat/backend",
-  "version": "v0.8.1",
+  "version": "v0.8.2-rc1",
   "description": "",
   "scripts": {
     "start": "echo 'please run this from the root directory'",
@@ -47,7 +47,7 @@
     "@googleapis/youtube": "^20.0.0",
     "@keyv/redis": "^4.3.3",
     "@langchain/core": "^0.3.79",
-    "@librechat/agents": "^3.0.50",
+    "@librechat/agents": "^3.0.51",
     "@librechat/api": "*",
     "@librechat/data-schemas": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",

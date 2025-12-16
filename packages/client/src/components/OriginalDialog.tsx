@@ -9,7 +9,7 @@ interface OGDialogProps extends DialogPrimitive.DialogProps {
 }
 
 const Dialog = React.forwardRef<HTMLDivElement, OGDialogProps>(
-  ({ children, triggerRef, triggerRefs, onOpenChange, ...props }, _ref) => {
+  ({ children, triggerRef, triggerRefs, onOpenChange, ...props }) => {
     const handleOpenChange = (open: boolean) => {
       if (!open && triggerRef?.current) {
         setTimeout(() => {
@@ -78,29 +78,39 @@ const DialogContent = React.forwardRef<
     },
     ref,
   ) => {
-    /* Handle Escape key to prevent closing dialog if a tooltip is open 
+    const contentRef = React.useRef<HTMLDivElement>(null);
+
+    React.useImperativeHandle(ref, () => contentRef.current as HTMLDivElement, []);
+
+    /* Handle Escape key to prevent closing dialog if a tooltip or dropdown is open 
     (this is a workaround in order to achieve WCAG compliance which requires
     that our tooltips be dismissable with Escape key) */
     const handleEscapeKeyDown = React.useCallback(
       (event: KeyboardEvent) => {
-        const tooltips = document.querySelectorAll('.tooltip');
+        if (!contentRef.current) {
+          propsOnEscapeKeyDown?.(event);
+          return;
+        }
 
-        for (const tooltip of Array.from(tooltips)) {
-          const computedStyle = window.getComputedStyle(tooltip);
-          const opacity = parseFloat(computedStyle.opacity);
+        const tooltips = contentRef.current.querySelectorAll('.tooltip');
+        const dropdownMenus = contentRef.current.querySelectorAll('[role="menu"]');
 
-          if (
-            tooltip.parentElement &&
-            computedStyle.display !== 'none' &&
-            computedStyle.visibility !== 'hidden' &&
-            opacity > 0
-          ) {
+        for (const tooltip of tooltips) {
+          const style = window.getComputedStyle(tooltip);
+          if (style.display !== 'none') {
             event.preventDefault();
             return;
           }
         }
 
-        // Call the original handler if it exists
+        for (const dropdownMenu of dropdownMenus) {
+          const style = window.getComputedStyle(dropdownMenu);
+          if (style.display !== 'none') {
+            event.preventDefault();
+            return;
+          }
+        }
+
         propsOnEscapeKeyDown?.(event);
       },
       [propsOnEscapeKeyDown],
@@ -110,7 +120,7 @@ const DialogContent = React.forwardRef<
       <DialogPortal>
         <DialogOverlay className={overlayClassName} />
         <DialogPrimitive.Content
-          ref={ref}
+          ref={contentRef}
           onEscapeKeyDown={handleEscapeKeyDown}
           className={cn(
             'max-w-11/12 fixed left-[50%] top-[50%] z-50 grid max-h-[90vh] w-full translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl bg-background p-6 text-text-primary shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]',
@@ -122,7 +132,6 @@ const DialogContent = React.forwardRef<
           {showCloseButton && (
             <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-ring-primary ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
               <X className="h-6 w-6" aria-hidden="true" />
-              {/* eslint-disable-next-line i18next/no-literal-string */}
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
           )}
