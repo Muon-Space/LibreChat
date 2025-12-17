@@ -9,4 +9,5 @@ This fork implements these custom changes:
 - Removed all workflows
   - added just one workflow to build/push the image
     - this is built with more optimization for build speeds
+  - updated Dockerfile to mount cache
 - Updated README.md
