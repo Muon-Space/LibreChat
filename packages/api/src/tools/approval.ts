@@ -82,16 +82,17 @@ export function matchesPattern(toolName: string, pattern: string): boolean {
     return true;
   }
 
-  // Wildcard pattern: "mcp:*" or "prefix_*"
+  // Special case: "mcp:*" or "mcp_*" should match ALL MCP tools
+  // MCP tools can have names like "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
+  if (pattern === 'mcp:*' || pattern === 'mcp_*') {
+    const isMcpTool = toolName.includes(':::mcp:::') || /_mcp_/.test(toolName);
+    return isMcpTool;
+  }
+
+  // Wildcard pattern: "prefix_*" matches tools starting with prefix
   if (pattern.endsWith('*')) {
     const prefix = pattern.slice(0, -1);
     return toolName.startsWith(prefix);
-  }
-
-  // Check if it's an MCP tool pattern like "mcp:*" matching tools with MCP delimiter
-  if (pattern === 'mcp:*' || pattern === 'mcp_*') {
-    // MCP tools contain the MCP delimiter (:::mcp:::)
-    return toolName.includes(':::mcp:::');
   }
 
   return false;

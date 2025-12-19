@@ -568,12 +568,13 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
   for (let i = 0; i < loadedTools.length; i++) {
     let tool = loadedTools[i];
 
-    // Check if tool requires approval and wrap if needed (but not MCP tools - they handle it internally)
+    // Check if tool requires approval and wrap if needed
+    // Note: MCP tools can also be wrapped if explicitly configured in toolApproval
     const needsApproval = requiresApproval(tool.name, toolApprovalConfig);
     logger.info(
       `[Tool Approval] Tool "${tool.name}": mcp=${tool.mcp}, needsApproval=${needsApproval}`,
     );
-    if (tool.mcp !== true && res && needsApproval) {
+    if (res && needsApproval) {
       tool = wrapToolWithApproval({ tool, res });
       logger.info(`[Tool Approval] Wrapped tool ${tool.name} with approval flow`);
     }
