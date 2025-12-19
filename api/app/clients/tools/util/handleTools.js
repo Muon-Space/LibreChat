@@ -2,19 +2,26 @@ const { logger } = require('@librechat/data-schemas');
 const {
   EnvVar,
   Calculator,
+  StepTypes,
+  GraphEvents,
   createSearchTool,
   createCodeExecutionTool,
 } = require('@librechat/agents');
 const {
+  sendEvent,
   checkAccess,
   createSafeUser,
   mcpToolPattern,
   loadWebSearchAuth,
   buildImageToolContext,
+  MCPToolCallValidationHandler,
 } = require('@librechat/api');
-const { getMCPServersRegistry } = require('~/config');
+const { getMCPServersRegistry, getFlowStateManager } = require('~/config');
+const { getLogStores } = require('~/cache');
 const {
+  Time,
   Tools,
+  CacheKeys,
   Constants,
   Permissions,
   EToolResources,
@@ -330,6 +337,7 @@ const loadTools = async ({
         webSearchConfig: webSearch,
       });
       const { onSearchResults, onGetHighlights } = options?.[Tools.web_search] ?? {};
+      const res = options?.res;
       requestedTools[tool] = async () => {
         toolContextMap[tool] = `# \`${tool}\`:
 Current Date & Time: ${replaceSpecialVars({ text: '{{iso_datetime}}' })}
@@ -349,12 +357,103 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 - Image: "See photo\\ue202turn0image0."
 
 **CRITICAL:** Output escape sequences EXACTLY as shown. Do NOT substitute with † or other symbols. Place anchors AFTER punctuation. Cite every non-obvious fact/quote. NEVER use markdown links, [1], footnotes, or HTML tags.`.trim();
-        return createSearchTool({
+
+        // Create the base search tool
+        const baseSearchTool = createSearchTool({
           ...result.authResult,
           onSearchResults,
           onGetHighlights,
           logger,
         });
+
+        // Wrap with validation flow if res is available
+        if (res) {
+          const originalCall = baseSearchTool._call.bind(baseSearchTool);
+          baseSearchTool._call = async (toolArguments, config) => {
+            const userId = config?.configurable?.user?.id || config?.configurable?.user_id;
+            const toolName = Tools.web_search;
+            const serverName = 'builtin'; // Use 'builtin' for built-in tools
+
+            try {
+              const flowsCache = getLogStores(CacheKeys.FLOWS);
+              const flowManager = getFlowStateManager(flowsCache);
+              const derivedSignal = config?.signal ? AbortSignal.any([config.signal]) : undefined;
+
+              const { args: _args, stepId, ...toolCall } = config?.toolCall ?? {};
+
+              // Initiate validation flow - get the validation ID and metadata
+              const { validationId, flowMetadata } =
+                await MCPToolCallValidationHandler.initiateValidationFlow(
+                  userId,
+                  serverName,
+                  toolName,
+                  typeof toolArguments === 'string' ? { query: toolArguments } : toolArguments,
+                );
+
+              // Send the validation request SSE event to the client
+              /** @type {{ id: string; delta: AgentToolCallDelta }} */
+              const validationData = {
+                id: stepId,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ ...toolCall, args: '' }],
+                  validation: validationId,
+                  expires_at: Date.now() + Time.TEN_MINUTES,
+                },
+              };
+              sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
+              logger.debug('[Web Search Validation] Sent tool call validation request to client');
+
+              // Wait for user to approve the tool call
+              const validationFlowType = MCPToolCallValidationHandler.getFlowType();
+              try {
+                logger.debug(`[Web Search Validation] Waiting for user approval: ${validationId}`);
+                await flowManager.createFlow(
+                  validationId,
+                  validationFlowType,
+                  flowMetadata,
+                  derivedSignal,
+                );
+                logger.info(`[Web Search Validation] Tool call approved by user: ${toolName}`);
+
+                // Send validation success to client
+                const successData = {
+                  id: stepId,
+                  delta: {
+                    type: StepTypes.TOOL_CALLS,
+                    tool_calls: [{ ...toolCall }],
+                  },
+                };
+                sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: successData });
+              } catch (validationError) {
+                logger.warn(
+                  `[Web Search Validation] Tool call validation failed for ${toolName}:`,
+                  validationError,
+                );
+                throw new Error(
+                  `Tool call validation required for ${toolName}. User rejected or validation timed out.`,
+                );
+              }
+
+              // Execute the original search tool
+              return await originalCall(toolArguments, config);
+            } catch (error) {
+              // Check if it's a validation error
+              const isValidationError =
+                error.message?.includes('validation required') ||
+                error.message?.includes('User rejected') ||
+                error.message?.includes('mcp_tool_validation');
+
+              if (isValidationError) {
+                throw new Error(`Tool call for ${toolName} was not approved by the user.`);
+              }
+
+              throw error;
+            }
+          };
+        }
+
+        return baseSearchTool;
       };
       continue;
     } else if (tool && mcpToolPattern.test(tool)) {
