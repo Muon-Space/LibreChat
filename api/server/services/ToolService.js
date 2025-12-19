@@ -382,7 +382,9 @@ function wrapToolWithApproval({ tool, res }) {
   const serverName = getToolServerName(toolName);
 
   tool._call = async (toolArguments, config) => {
+    logger.info(`[Tool Approval] _call invoked for ${toolName}, args: ${JSON.stringify(toolArguments)?.slice(0, 200)}`);
     const userId = config?.configurable?.user?.id || config?.configurable?.user_id;
+    logger.info(`[Tool Approval] userId=${userId}, stepId=${config?.toolCall?.stepId}`);
 
     try {
       const flowsCache = getLogStores(CacheKeys.FLOWS);
@@ -569,14 +571,17 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     let tool = loadedTools[i];
 
     // Check if tool requires approval and wrap if needed
-    // Note: MCP tools can also be wrapped if explicitly configured in toolApproval
+    // Note: MCP tools already have validation built into MCP.js, so we skip wrapping them
+    // The MCP validation flow in MCP.js will handle approval for MCP tools
     const needsApproval = requiresApproval(tool.name, toolApprovalConfig);
     logger.info(
       `[Tool Approval] Tool "${tool.name}": mcp=${tool.mcp}, needsApproval=${needsApproval}`,
     );
-    if (res && needsApproval) {
+    if (res && needsApproval && tool.mcp !== true) {
       tool = wrapToolWithApproval({ tool, res });
       logger.info(`[Tool Approval] Wrapped tool ${tool.name} with approval flow`);
+    } else if (tool.mcp === true && needsApproval) {
+      logger.info(`[Tool Approval] MCP tool ${tool.name} uses built-in MCP validation`);
     }
 
     // Tools that should bypass the toolFn wrapper and be pushed directly

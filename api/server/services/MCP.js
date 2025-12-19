@@ -415,12 +415,12 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         },
       };
       sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
-      logger.debug('[MCP Validation] Sent tool call validation request to client');
+      logger.info(`[MCP Validation] Sent tool call validation request to client: ${validationId}, stepId: ${stepId}`);
 
       // Now wait for user to approve the tool call
       // createFlow will create the flow state and block until it's completed/rejected
       try {
-        logger.debug(`[MCP Validation] Waiting for user approval: ${validationId}`);
+        logger.info(`[MCP Validation] Waiting for user approval: ${validationId}`);
         await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
         logger.info(`[MCP Validation] Tool call approved by user: ${serverName}/${toolName}`);
         // Send validation success to client
