@@ -1,14 +1,20 @@
-const { sleep } = require('@librechat/agents');
+const { sleep, StepTypes, GraphEvents } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@langchain/core/tools');
 const {
+  sendEvent,
   getToolkitKey,
   hasCustomUserVars,
   getUserMCPAuthMap,
+  requiresApproval,
+  getToolServerName,
   isActionDomainAllowed,
+  MCPToolCallValidationHandler,
 } = require('@librechat/api');
 const {
+  Time,
   Tools,
+  CacheKeys,
   Constants,
   ErrorTypes,
   ContentTypes,
@@ -22,6 +28,8 @@ const {
   defaultAgentCapabilities,
   validateAndParseOpenAPISpec,
 } = require('librechat-data-provider');
+const { getFlowStateManager } = require('~/config');
+const { getLogStores } = require('~/cache');
 const {
   createActionTool,
   decryptMetadata,
@@ -360,6 +368,98 @@ async function processRequiredActions(client, requiredActions) {
 }
 
 /**
+ * Wraps a tool with approval validation flow.
+ * The wrapped tool will send an SSE event and wait for user approval before executing.
+ *
+ * @param {Object} params - Parameters for wrapping
+ * @param {Object} params.tool - The tool to wrap
+ * @param {ServerResponse} params.res - The response object for SSE
+ * @returns {Object} The wrapped tool
+ */
+function wrapToolWithApproval({ tool, res }) {
+  const originalCall = tool._call.bind(tool);
+  const toolName = tool.name;
+  const serverName = getToolServerName(toolName);
+
+  tool._call = async (toolArguments, config) => {
+    const userId = config?.configurable?.user?.id || config?.configurable?.user_id;
+
+    try {
+      const flowsCache = getLogStores(CacheKeys.FLOWS);
+      const flowManager = getFlowStateManager(flowsCache);
+      const derivedSignal = config?.signal ? AbortSignal.any([config.signal]) : undefined;
+
+      const { args: _args, stepId, ...toolCall } = config?.toolCall ?? {};
+
+      // Initiate validation flow - get the validation ID and metadata
+      const { validationId, flowMetadata } =
+        await MCPToolCallValidationHandler.initiateValidationFlow(
+          userId,
+          serverName,
+          toolName,
+          typeof toolArguments === 'string' ? { input: toolArguments } : toolArguments,
+        );
+
+      // Send the validation request SSE event to the client
+      const validationData = {
+        id: stepId,
+        delta: {
+          type: StepTypes.TOOL_CALLS,
+          tool_calls: [{ ...toolCall, args: '' }],
+          validation: validationId,
+          expires_at: Date.now() + Time.TEN_MINUTES,
+        },
+      };
+      sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
+      logger.debug(`[Tool Approval] Sent validation request for ${toolName}: ${validationId}`);
+
+      // Wait for user to approve the tool call
+      const validationFlowType = MCPToolCallValidationHandler.getFlowType();
+      try {
+        logger.debug(`[Tool Approval] Waiting for user approval: ${validationId}`);
+        await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
+        logger.info(`[Tool Approval] Tool call approved by user: ${toolName}`);
+
+        // Send validation success to client
+        const successData = {
+          id: stepId,
+          delta: {
+            type: StepTypes.TOOL_CALLS,
+            tool_calls: [{ ...toolCall }],
+          },
+        };
+        sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: successData });
+      } catch (validationError) {
+        logger.warn(`[Tool Approval] Tool call validation failed for ${toolName}:`, validationError);
+        throw new Error(
+          `Tool call validation required for ${toolName}. User rejected or validation timed out.`,
+        );
+      }
+
+      // Execute the original tool
+      return await originalCall(toolArguments, config);
+    } catch (error) {
+      // Check if it's a validation error
+      const isValidationError =
+        error.message?.includes('validation required') ||
+        error.message?.includes('User rejected') ||
+        error.message?.includes('mcp_tool_validation');
+
+      if (isValidationError) {
+        throw new Error(`Tool call for ${toolName} was not approved by the user.`);
+      }
+
+      throw error;
+    }
+  };
+
+  // Mark as requiring direct handling (bypass toolFn wrapper)
+  tool.requiresApproval = true;
+
+  return tool;
+}
+
+/**
  * Processes the runtime tool calls and returns the tool classes.
  * @param {Object} params - Run params containing user and request information.
  * @param {ServerRequest} params.req - The request object.
@@ -458,9 +558,20 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     imageOutputType: appConfig.imageOutputType,
   });
 
+  // Get tool approval configuration
+  const toolApprovalConfig = appConfig.endpoints?.[EModelEndpoint.agents]?.toolApproval;
+
   const agentTools = [];
   for (let i = 0; i < loadedTools.length; i++) {
-    const tool = loadedTools[i];
+    let tool = loadedTools[i];
+
+    // Check if tool requires approval and wrap if needed (but not MCP tools - they handle it internally)
+    if (tool.mcp !== true && res && requiresApproval(tool.name, toolApprovalConfig)) {
+      tool = wrapToolWithApproval({ tool, res });
+      logger.debug(`[Tool Approval] Wrapped tool ${tool.name} with approval flow`);
+    }
+
+    // Tools that should bypass the toolFn wrapper and be pushed directly
     if (tool.name && (tool.name === Tools.execute_code || tool.name === Tools.file_search)) {
       agentTools.push(tool);
       continue;
@@ -470,7 +581,8 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
       continue;
     }
 
-    if (tool.mcp === true) {
+    // MCP tools and approval-wrapped tools bypass the toolFn wrapper
+    if (tool.mcp === true || tool.requiresApproval === true) {
       agentTools.push(tool);
       continue;
     }
