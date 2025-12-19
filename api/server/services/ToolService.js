@@ -381,8 +381,12 @@ function wrapToolWithApproval({ tool, res }) {
   const toolName = tool.name;
   const serverName = getToolServerName(toolName);
 
-  tool._call = async (toolArguments, config) => {
+  // LangChain's _call signature is: _call(arg, runManager, parentConfig)
+  // The parentConfig contains toolCall with stepId, etc. (set by ToolNode.invoke)
+  tool._call = async (toolArguments, runManager, parentConfig) => {
     logger.info(`[Tool Approval] _call invoked for ${toolName}, args: ${JSON.stringify(toolArguments)?.slice(0, 200)}`);
+    // Config with toolCall is in parentConfig (3rd param), not runManager (2nd param)
+    const config = parentConfig;
     const userId = config?.configurable?.user?.id || config?.configurable?.user_id;
     logger.info(`[Tool Approval] userId=${userId}, stepId=${config?.toolCall?.stepId}`);
 
@@ -438,8 +442,8 @@ function wrapToolWithApproval({ tool, res }) {
         );
       }
 
-      // Execute the original tool
-      return await originalCall(toolArguments, config);
+      // Execute the original tool with all 3 arguments
+      return await originalCall(toolArguments, runManager, parentConfig);
     } catch (error) {
       // Check if it's a validation error
       const isValidationError =
