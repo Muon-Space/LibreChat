@@ -107,10 +107,15 @@ export function matchesPattern(toolName: string, pattern: string): boolean {
  * @returns The server name
  */
 export function getToolServerName(toolName: string): string {
-  // MCP tools have format: "toolName:::mcp:::serverName"
+  // MCP tools have format: "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
   if (toolName.includes(':::mcp:::')) {
     const parts = toolName.split(':::mcp:::');
     return parts[1] || 'mcp';
+  }
+  // Handle "_mcp_" format: "search_gmail_messages_mcp_google" -> "google"
+  const mcpMatch = toolName.match(/_mcp_([^_]+)$/);
+  if (mcpMatch) {
+    return mcpMatch[1];
   }
   return 'builtin';
 }
@@ -122,10 +127,15 @@ export function getToolServerName(toolName: string): string {
  * @returns The base tool name
  */
 export function getBaseToolName(toolName: string): string {
-  // MCP tools have format: "toolName:::mcp:::serverName"
+  // MCP tools have format: "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
   if (toolName.includes(':::mcp:::')) {
     const parts = toolName.split(':::mcp:::');
     return parts[0] || toolName;
+  }
+  // Handle "_mcp_" format: "search_gmail_messages_mcp_google" -> "search_gmail_messages"
+  const mcpMatch = toolName.match(/^(.+)_mcp_[^_]+$/);
+  if (mcpMatch) {
+    return mcpMatch[1];
   }
   return toolName;
 }
