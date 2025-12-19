@@ -569,6 +569,9 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
   logger.info(
     `[Tool Approval] Config loaded: ${JSON.stringify(toolApprovalConfig)}, res available: ${!!res}`,
   );
+  logger.info(
+    `[Tool Approval] Loaded tools: ${loadedTools.map((t) => t.name).join(', ')} (count: ${loadedTools.length})`,
+  );
 
   const agentTools = [];
   for (let i = 0; i < loadedTools.length; i++) {
