@@ -156,48 +156,6 @@ function createOAuthCallback({ runStepEmitter, runStepDeltaEmitter }) {
 }
 
 /**
- * Creates a function to send a validation request to the client.
- * This notifies the UI that a tool call requires user approval.
- * @param {object} params
- * @param {ServerResponse} params.res - The Express response object for sending events.
- * @param {string} params.stepId - The ID of the step in the flow.
- * @param {ToolCallChunk} params.toolCall - The tool call object containing tool information.
- * @param {string} params.validationFlowId - The ID of the validation flow.
- * @param {FlowStateManager<any>} params.flowManager - The flow manager instance.
- * @param {AbortSignal} [params.signal] - Optional abort signal.
- */
-function createValidationStart({ res, stepId, toolCall, validationFlowId, flowManager, signal }) {
-  /**
-   * Sends a validation request event to the client.
-   * @param {string} validationId - The ID of the validation flow.
-   * @returns {Promise<boolean>} Returns true to indicate the event was sent successfully.
-   */
-  return async function (validationId) {
-    /** @type {{ id: string; delta: AgentToolCallDelta }} */
-    const data = {
-      id: stepId,
-      delta: {
-        type: StepTypes.TOOL_CALLS,
-        tool_calls: [{ ...toolCall, args: '' }],
-        validation: validationId,
-        expires_at: Date.now() + Time.TEN_MINUTES,
-      },
-    };
-    /** Used to ensure the handler (use of `sendEvent`) is only invoked once */
-    await flowManager.createFlowWithHandler(
-      validationFlowId,
-      'tool_validation_send',
-      async () => {
-        sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data });
-        logger.debug('[MCP Validation] Sent tool call validation request to client');
-        return true;
-      },
-      signal,
-    );
-  };
-}
-
-/**
  * Creates a function to send validation completion event to the client.
  * @param {object} params
  * @param {ServerResponse} params.res - The Express response object for sending events.
@@ -426,9 +384,9 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       }
 
       // Tool call validation flow - requires user approval before executing
-      const validationFlowId = `${serverName}:tool_validation:${config.metadata.thread_id}:${config.metadata.run_id}`;
+      const validationFlowType = MCPToolCallValidationHandler.getFlowType();
 
-      // Initiate validation flow
+      // Initiate validation flow - get the validation ID and metadata
       const { validationId, flowMetadata } =
         await MCPToolCallValidationHandler.initiateValidationFlow(
           userId,
@@ -437,29 +395,30 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
           typeof toolArguments === 'string' ? { input: toolArguments } : toolArguments,
         );
 
-      // Create validation start and end functions
-      const validationStart = createValidationStart({
-        res,
-        stepId,
-        toolCall,
-        validationFlowId,
-        flowManager,
-        signal: derivedSignal,
-      });
+      // Create validation end function for after approval
       const validationEnd = createValidationEnd({
         res,
         stepId,
         toolCall,
       });
 
-      // Create the validation flow in the flow manager
-      const validationFlowType = MCPToolCallValidationHandler.getFlowType();
-      await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
+      // First, send the validation request SSE event to the client
+      // This must happen BEFORE we start waiting, so the client can show the approval UI
+      /** @type {{ id: string; delta: AgentToolCallDelta }} */
+      const validationData = {
+        id: stepId,
+        delta: {
+          type: StepTypes.TOOL_CALLS,
+          tool_calls: [{ ...toolCall, args: '' }],
+          validation: validationId,
+          expires_at: Date.now() + Time.TEN_MINUTES,
+        },
+      };
+      sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
+      logger.debug('[MCP Validation] Sent tool call validation request to client');
 
-      // Send validation request to client
-      await validationStart(validationId);
-
-      // Wait for user to approve the tool call (flow will complete when user clicks confirm)
+      // Now wait for user to approve the tool call
+      // createFlow will create the flow state and block until it's completed/rejected
       try {
         logger.debug(`[MCP Validation] Waiting for user approval: ${validationId}`);
         await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
