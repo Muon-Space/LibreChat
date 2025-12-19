@@ -465,6 +465,7 @@ export type PartMetadata = {
   status?: string;
   action?: boolean;
   auth?: string;
+  validation?: string;
   expires_at?: number;
 };
 

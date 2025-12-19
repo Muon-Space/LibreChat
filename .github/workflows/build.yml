@@ -1,9 +1,12 @@
-name: Docker Images Build on Tag
+name: Docker Images Build
 
 on:
   push:
     tags:
       - '*'
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build:
@@ -60,6 +63,21 @@ jobs:
           PLATFORM_TAG=$(echo "${{ matrix.platform }}" | tr '/' '-')
           echo "tag=${PLATFORM_TAG}" >> $GITHUB_OUTPUT
 
+      # Determine the image tag based on event type
+      - name: Set image tag
+        id: image_tag
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # For PRs, use dev-<short-sha> format
+            SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+            echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+          else
+            # For tag pushes, use the tag name
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push Docker images
         uses: docker/build-push-action@v6
         with:
@@ -67,7 +85,7 @@ jobs:
           file: ${{ matrix.file }}
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-${{ steps.platform.outputs.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}-${{ steps.platform.outputs.tag }}
           platforms: ${{ matrix.platform }}
           target: ${{ matrix.target }}
           cache-from: type=gha,scope=${{ matrix.image_name }}-${{ steps.platform.outputs.tag }}
@@ -91,18 +109,34 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Determine the image tag based on event type
+      - name: Set image tag
+        id: image_tag
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # For PRs, use dev-<short-sha> format
+            SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+            echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+          else
+            # For tag pushes, use the tag name
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create and push manifest for version tag
         run: |
           docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }} \
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-amd64 \
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }} \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}
 
       - name: Create and push manifest for latest tag
+        if: steps.image_tag.outputs.is_pr != 'true'
         run: |
           docker manifest create \
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest \
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-amd64 \
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-arm64
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ steps.image_tag.outputs.tag }}-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest
