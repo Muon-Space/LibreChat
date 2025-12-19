@@ -560,15 +560,22 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
 
   // Get tool approval configuration
   const toolApprovalConfig = appConfig.endpoints?.[EModelEndpoint.agents]?.toolApproval;
+  logger.info(
+    `[Tool Approval] Config loaded: ${JSON.stringify(toolApprovalConfig)}, res available: ${!!res}`,
+  );
 
   const agentTools = [];
   for (let i = 0; i < loadedTools.length; i++) {
     let tool = loadedTools[i];
 
     // Check if tool requires approval and wrap if needed (but not MCP tools - they handle it internally)
-    if (tool.mcp !== true && res && requiresApproval(tool.name, toolApprovalConfig)) {
+    const needsApproval = requiresApproval(tool.name, toolApprovalConfig);
+    logger.info(
+      `[Tool Approval] Tool "${tool.name}": mcp=${tool.mcp}, needsApproval=${needsApproval}`,
+    );
+    if (tool.mcp !== true && res && needsApproval) {
       tool = wrapToolWithApproval({ tool, res });
-      logger.debug(`[Tool Approval] Wrapped tool ${tool.name} with approval flow`);
+      logger.info(`[Tool Approval] Wrapped tool ${tool.name} with approval flow`);
     }
 
     // Tools that should bypass the toolFn wrapper and be pushed directly

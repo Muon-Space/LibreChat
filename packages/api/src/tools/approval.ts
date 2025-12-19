@@ -13,14 +13,19 @@ export function requiresApproval(
   toolName: string,
   toolApproval: TToolApproval | undefined,
 ): boolean {
+  logger.debug(`[requiresApproval] toolName=${toolName}, config=${JSON.stringify(toolApproval)}`);
+
   if (!toolApproval) {
+    logger.debug('[requiresApproval] No toolApproval config, returning false');
     return false;
   }
 
   const { required, excluded } = toolApproval;
+  logger.debug(`[requiresApproval] required=${JSON.stringify(required)}, excluded=${JSON.stringify(excluded)}`);
 
   // If required is not set, no approval needed
   if (required === undefined || required === false) {
+    logger.debug('[requiresApproval] required is undefined or false, returning false');
     return false;
   }
 
@@ -35,18 +40,23 @@ export function requiresApproval(
 
   // If required is true, all tools require approval (except excluded)
   if (required === true) {
+    logger.debug('[requiresApproval] required is true, returning true');
     return true;
   }
 
   // If required is an array, check if tool matches any pattern
   if (Array.isArray(required)) {
     for (const pattern of required) {
-      if (matchesPattern(toolName, pattern)) {
+      const matches = matchesPattern(toolName, pattern);
+      logger.debug(`[requiresApproval] Checking pattern "${pattern}" against "${toolName}": ${matches}`);
+      if (matches) {
+        logger.debug(`[requiresApproval] Tool "${toolName}" matches pattern "${pattern}", returning true`);
         return true;
       }
     }
   }
 
+  logger.debug(`[requiresApproval] No patterns matched for "${toolName}", returning false`);
   return false;
 }
 
