@@ -101,7 +101,11 @@ function getLLMConfig(
 
   const mergedOptions = Object.assign(defaultOptions, options.modelOptions);
 
-  let enableWebSearch = mergedOptions.web_search;
+  // Native web_search is disabled - we use the LangChain @langchain/anthropic web search tool instead.
+  // This allows us to intercept the search for approval before execution.
+  // The LangChain tool provides the same Anthropic search quality with client-side control.
+  let enableWebSearch = false;
+  void mergedOptions.web_search; // Acknowledge the option exists but we intentionally ignore it
 
   let requestOptions: AnthropicClientOptions & { stream?: boolean } = {
     model: mergedOptions.model,

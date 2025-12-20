@@ -1,4 +1,5 @@
 import { ErrorTypes, EModelEndpoint, mapModelToAzureConfig } from 'librechat-data-provider';
+import type { TToolApproval } from 'librechat-data-provider';
 import type {
   BaseInitializeParams,
   InitializeResultBase,
@@ -7,6 +8,32 @@ import type {
 } from '~/types';
 import { getAzureCredentials, resolveHeaders, isUserProvided, checkUserKeyExpiry } from '~/utils';
 import { getOpenAIConfig } from './config';
+
+/**
+ * Checks if web_search requires approval based on the toolApproval config.
+ * When approval is required, we disable native web search to force use of the
+ * LangChain web_search tool, which can be intercepted for approval before execution.
+ * Native Anthropic web search executes on their servers before we can intercept it.
+ */
+function shouldDisableNativeWebSearch(toolApproval: TToolApproval | undefined): boolean {
+  if (!toolApproval) {
+    return false;
+  }
+  const { required, excluded } = toolApproval;
+  // If excluded contains web_search, approval not needed - keep native
+  if (excluded?.includes('web_search')) {
+    return false;
+  }
+  // If required is true (all tools), disable native to allow pre-execution approval
+  if (required === true) {
+    return true;
+  }
+  // If required array includes web_search, disable native to allow pre-execution approval
+  if (Array.isArray(required) && required.includes('web_search')) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Initializes OpenAI options for agent usage. This function always returns configuration
@@ -127,6 +154,16 @@ export async function initializeOpenAI({
     model: modelName,
     user: req.user?.id,
   };
+
+  // Disable native web_search when approval is required
+  // This forces use of the LangChain web_search tool which can be intercepted before execution
+  const toolApproval = appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval;
+  if (shouldDisableNativeWebSearch(toolApproval)) {
+    clientOptions.dropParams = clientOptions.dropParams ?? [];
+    if (!clientOptions.dropParams.includes('web_search')) {
+      clientOptions.dropParams.push('web_search');
+    }
+  }
 
   const finalClientOptions: OpenAIConfigOptions = {
     ...clientOptions,

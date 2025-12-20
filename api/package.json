@@ -45,6 +45,7 @@
     "@google/genai": "^1.19.0",
     "@googleapis/youtube": "^20.0.0",
     "@keyv/redis": "^4.3.3",
+    "@langchain/anthropic": "^0.3.20",
     "@langchain/core": "^0.3.79",
     "@librechat/agents": "^3.0.52",
     "@librechat/api": "*",
