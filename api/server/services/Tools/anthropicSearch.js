@@ -1,8 +1,12 @@
 const { z } = require('zod');
 const { ChatAnthropic, tools: anthropicTools } = require('@langchain/anthropic');
 const { tool } = require('@langchain/core/tools');
-const { Tools, Constants } = require('librechat-data-provider');
+const { Tools, Constants, AuthKeys } = require('librechat-data-provider');
 const { logger } = require('@librechat/data-schemas');
+const {
+  isAnthropicVertexCredentials,
+  createAnthropicVertexClient,
+} = require('@librechat/api');
 
 /**
  * Extracts search results from Anthropic's web search response
@@ -93,8 +97,14 @@ function formatResultsForLLM(turn, results) {
  * This tool wraps Anthropic's native web search capability in a LangChain tool,
  * allowing it to be used with approval flows and other LangChain features.
  *
+ * Supports both direct Anthropic API and Vertex AI authentication:
+ * - For direct API: pass { apiKey: 'your-key' }
+ * - For Vertex AI: pass { credentials: { GOOGLE_SERVICE_KEY: {...} }, vertexOptions: { region, projectId } }
+ *
  * @param {object} config - Configuration options
- * @param {string} config.apiKey - Anthropic API key
+ * @param {string} [config.apiKey] - Anthropic API key (for direct API access)
+ * @param {object} [config.credentials] - Credentials object (supports both API key and Vertex AI)
+ * @param {object} [config.vertexOptions] - Vertex AI options (region, projectId)
  * @param {string} [config.model='claude-sonnet-4-5-20250929'] - Model to use for search
  * @param {function} [config.onSearchResults] - Callback for search results
  * @param {function} [config.onGetHighlights] - Callback for highlights
@@ -104,20 +114,45 @@ function formatResultsForLLM(turn, results) {
 function createAnthropicSearchTool(config = {}) {
   const {
     apiKey,
+    credentials,
+    vertexOptions,
     model = 'claude-sonnet-4-5-20250929',
     onSearchResults,
     onGetHighlights,
     webSearchOptions = {},
   } = config;
 
-  if (!apiKey) {
-    throw new Error('Anthropic API key is required for Anthropic search tool');
+  // Build credentials object from apiKey if credentials not provided
+  const creds = credentials || (apiKey ? { [AuthKeys.ANTHROPIC_API_KEY]: apiKey } : null);
+
+  if (!creds) {
+    throw new Error('Anthropic credentials are required for Anthropic search tool');
   }
 
-  const llm = new ChatAnthropic({
-    apiKey,
-    model,
-  });
+  // Check if using Vertex AI
+  const isVertex = isAnthropicVertexCredentials(creds);
+
+  let llmConfig = { model };
+
+  if (isVertex) {
+    logger.info('[AnthropicSearch] Using Vertex AI for web search');
+    // Create a custom client for Vertex AI
+    const clientOptions = {
+      defaultHeaders: {
+        'anthropic-beta': 'web-search-2025-03-05',
+      },
+    };
+    llmConfig.createClient = () => createAnthropicVertexClient(creds, clientOptions, vertexOptions);
+  } else {
+    // Direct API access
+    const directApiKey = creds[AuthKeys.ANTHROPIC_API_KEY];
+    if (!directApiKey) {
+      throw new Error('Anthropic API key is required for direct API access');
+    }
+    llmConfig.apiKey = directApiKey;
+  }
+
+  const llm = new ChatAnthropic(llmConfig);
 
   const searchSchema = z.object({
     query: z.string().describe('The search query to look up on the web'),

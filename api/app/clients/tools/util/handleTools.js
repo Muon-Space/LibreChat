@@ -11,10 +11,14 @@ const {
   mcpToolPattern,
   loadWebSearchAuth,
   buildImageToolContext,
+  loadAnthropicVertexCredentials,
+  getVertexCredentialOptions,
+  isEnabled,
 } = require('@librechat/api');
 const { getMCPServersRegistry } = require('~/config');
 const {
   Tools,
+  AuthKeys,
   Constants,
   Permissions,
   EToolResources,
@@ -353,17 +357,47 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 
         // Use Anthropic search tool for Anthropic models
         if (isAnthropicProvider) {
-          const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-          if (!anthropicApiKey) {
-            logger.warn('[handleTools] ANTHROPIC_API_KEY not set, falling back to default search');
-          } else {
-            logger.info('[handleTools] Using Anthropic search tool for Anthropic model');
+          try {
+            // Check for Vertex AI configuration
+            const appConfig = options.req?.config;
+            const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
+            const useVertexAI = vertexConfig?.enabled || isEnabled(process.env.ANTHROPIC_USE_VERTEX);
+
+            let credentials = {};
+            let vertexOptions;
+
+            if (useVertexAI) {
+              // Load Vertex AI credentials
+              const credentialOptions = vertexConfig ? getVertexCredentialOptions(vertexConfig) : undefined;
+              credentials = await loadAnthropicVertexCredentials(credentialOptions);
+
+              if (vertexConfig) {
+                vertexOptions = {
+                  region: vertexConfig.region,
+                  projectId: vertexConfig.projectId,
+                };
+              }
+              logger.info('[handleTools] Using Anthropic search tool with Vertex AI');
+            } else {
+              // Use direct API key
+              const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+              if (!anthropicApiKey) {
+                logger.warn('[handleTools] ANTHROPIC_API_KEY not set, falling back to default search');
+                throw new Error('ANTHROPIC_API_KEY not set');
+              }
+              credentials[AuthKeys.ANTHROPIC_API_KEY] = anthropicApiKey;
+              logger.info('[handleTools] Using Anthropic search tool with API key');
+            }
+
             return createAnthropicSearchTool({
-              apiKey: anthropicApiKey,
+              credentials,
+              vertexOptions,
               model: agent?.model || 'claude-sonnet-4-5-20250929',
               onSearchResults,
               onGetHighlights,
             });
+          } catch (error) {
+            logger.warn('[handleTools] Failed to create Anthropic search tool, falling back to default:', error.message);
           }
         }
 
