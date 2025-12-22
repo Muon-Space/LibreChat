@@ -356,65 +356,60 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 
 **CRITICAL:** Output escape sequences EXACTLY as shown. Do NOT substitute with † or other symbols. Place anchors AFTER punctuation. Cite every non-obvious fact/quote. NEVER use markdown links, [1], footnotes, or HTML tags.`.trim();
 
-        // Use Anthropic search tool for Anthropic models
+        // Use Anthropic search tool for Anthropic models - no fallback to Serper needed
         if (isAnthropicProvider) {
-          try {
-            // Check for Vertex AI configuration
-            const appConfig = options.req?.config;
-            const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
-            const envVertexEnabled = process.env.ANTHROPIC_USE_VERTEX;
-            const useVertexAI = vertexConfig?.enabled || isEnabled(envVertexEnabled);
+          // Check for Vertex AI configuration
+          const appConfig = options.req?.config;
+          const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
+          const envVertexEnabled = process.env.ANTHROPIC_USE_VERTEX;
+          const useVertexAI = vertexConfig?.enabled || isEnabled(envVertexEnabled);
 
-            logger.info(`[handleTools] Anthropic web_search - vertexConfig?.enabled: ${vertexConfig?.enabled}, ANTHROPIC_USE_VERTEX env: ${envVertexEnabled}, useVertexAI: ${useVertexAI}`);
+          logger.info(`[handleTools] Anthropic web_search - vertexConfig?.enabled: ${vertexConfig?.enabled}, ANTHROPIC_USE_VERTEX env: ${envVertexEnabled}, useVertexAI: ${useVertexAI}`);
 
-            let credentials = {};
-            let vertexOptions;
+          let credentials = {};
+          let vertexOptions;
 
-            if (useVertexAI) {
-              // Load Vertex AI credentials
-              const credentialOptions = vertexConfig ? getVertexCredentialOptions(vertexConfig) : undefined;
-              credentials = await loadAnthropicVertexCredentials(credentialOptions);
+          if (useVertexAI) {
+            // Load Vertex AI credentials
+            const credentialOptions = vertexConfig ? getVertexCredentialOptions(vertexConfig) : undefined;
+            credentials = await loadAnthropicVertexCredentials(credentialOptions);
 
-              if (vertexConfig) {
-                vertexOptions = {
-                  region: vertexConfig.region,
-                  projectId: vertexConfig.projectId,
-                };
-              }
-              logger.info('[handleTools] Using Anthropic search tool with Vertex AI');
-            } else {
-              // Use direct API key
-              const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-              if (!anthropicApiKey) {
-                logger.warn('[handleTools] ANTHROPIC_API_KEY not set, falling back to default search');
-                throw new Error('ANTHROPIC_API_KEY not set');
-              }
-              credentials[AuthKeys.ANTHROPIC_API_KEY] = anthropicApiKey;
-              logger.info('[handleTools] Using Anthropic search tool with API key');
+            if (vertexConfig) {
+              vertexOptions = {
+                region: vertexConfig.region,
+                projectId: vertexConfig.projectId,
+              };
             }
-
-            return createAnthropicSearchTool({
-              credentials,
-              vertexOptions,
-              model: agent?.model || 'claude-sonnet-4-5-20250929',
-              onSearchResults,
-              onGetHighlights,
-            });
-          } catch (error) {
-            logger.error('[handleTools] Failed to create Anthropic search tool, falling back to default:', error.message, error.stack);
+            logger.info('[handleTools] Using Anthropic search tool with Vertex AI');
+          } else {
+            // Use direct API key
+            const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+            if (!anthropicApiKey) {
+              throw new Error('Anthropic web search requires ANTHROPIC_API_KEY or Vertex AI configuration');
+            }
+            credentials[AuthKeys.ANTHROPIC_API_KEY] = anthropicApiKey;
+            logger.info('[handleTools] Using Anthropic search tool with API key');
           }
+
+          // For Anthropic agents, use Anthropic's native search - no fallback to Serper
+          return createAnthropicSearchTool({
+            credentials,
+            vertexOptions,
+            model: agent?.model || 'claude-sonnet-4-5-20250929',
+            onSearchResults,
+            onGetHighlights,
+          });
         }
 
-        logger.info('[handleTools] Using fallback web search (Serper/SearXNG)');
+        // For non-Anthropic providers, use Serper/SearXNG
+        logger.info('[handleTools] Using web search (Serper/SearXNG)');
 
-        // Fall back to default search tool (Serper/SearXNG)
         const result = await loadWebSearchAuth({
           userId: user,
           loadAuthValues,
           webSearchConfig: webSearch,
         });
 
-        // Create the base search tool
         return createSearchTool({
           ...result.authResult,
           onSearchResults,

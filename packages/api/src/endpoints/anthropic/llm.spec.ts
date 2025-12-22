@@ -525,7 +525,9 @@ describe('getLLMConfig', () => {
         });
       });
 
-      it('should handle web search functionality like production', () => {
+      it('should handle web search functionality like production (native web_search disabled)', () => {
+        // Native web_search is intentionally disabled - we use the LangChain @langchain/anthropic
+        // web search tool instead for client-side control and approval flow support.
         const clientOptions = {
           modelOptions: {
             model: 'claude-3-5-sonnet-latest',
@@ -543,12 +545,8 @@ describe('getLLMConfig', () => {
           temperature: 0.6,
           maxTokens: 4096,
         });
-        expect(result.tools).toEqual([
-          {
-            type: 'web_search_20250305',
-            name: 'web_search',
-          },
-        ]);
+        // Native web_search is disabled - LangChain tool handles web search instead
+        expect(result.tools).toEqual([]);
       });
     });
 
