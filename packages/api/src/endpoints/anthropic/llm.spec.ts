@@ -1279,8 +1279,10 @@ describe('getLLMConfig', () => {
 
           if (key === 'stream') {
             expect(result.llmConfig.stream).toBe(expected);
-          } else if (key === 'web_search' && expected) {
-            expect(result.tools).toEqual([{ type: 'web_search_20250305', name: 'web_search' }]);
+          } else if (key === 'web_search') {
+            // Native web_search is intentionally disabled - we use the LangChain @langchain/anthropic
+            // web search tool instead for client-side control and approval flow support.
+            expect(result.tools).toEqual([]);
           }
         });
       });

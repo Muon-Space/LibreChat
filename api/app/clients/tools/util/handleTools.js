@@ -334,6 +334,7 @@ const loadTools = async ({
 
       // Check if the agent is using an Anthropic model
       const isAnthropicProvider = agent?.provider === EModelEndpoint.anthropic;
+      logger.info(`[handleTools] Loading web_search tool - agent?.provider: ${agent?.provider}, isAnthropicProvider: ${isAnthropicProvider}`);
 
       requestedTools[tool] = async () => {
         toolContextMap[tool] = `# \`${tool}\`:
@@ -361,7 +362,10 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
             // Check for Vertex AI configuration
             const appConfig = options.req?.config;
             const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
-            const useVertexAI = vertexConfig?.enabled || isEnabled(process.env.ANTHROPIC_USE_VERTEX);
+            const envVertexEnabled = process.env.ANTHROPIC_USE_VERTEX;
+            const useVertexAI = vertexConfig?.enabled || isEnabled(envVertexEnabled);
+
+            logger.info(`[handleTools] Anthropic web_search - vertexConfig?.enabled: ${vertexConfig?.enabled}, ANTHROPIC_USE_VERTEX env: ${envVertexEnabled}, useVertexAI: ${useVertexAI}`);
 
             let credentials = {};
             let vertexOptions;
@@ -397,9 +401,11 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
               onGetHighlights,
             });
           } catch (error) {
-            logger.warn('[handleTools] Failed to create Anthropic search tool, falling back to default:', error.message);
+            logger.error('[handleTools] Failed to create Anthropic search tool, falling back to default:', error.message, error.stack);
           }
         }
+
+        logger.info('[handleTools] Using fallback web search (Serper/SearXNG)');
 
         // Fall back to default search tool (Serper/SearXNG)
         const result = await loadWebSearchAuth({

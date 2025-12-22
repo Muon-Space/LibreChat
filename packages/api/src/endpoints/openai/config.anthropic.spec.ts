@@ -356,7 +356,9 @@ describe('getOpenAIConfig - Anthropic Compatibility', () => {
       });
     });
 
-    it('should handle web_search tool', () => {
+    it('should handle web_search option (native web_search disabled in favor of LangChain tool)', () => {
+      // Native web_search is intentionally disabled - we use the LangChain @langchain/anthropic
+      // web search tool instead for client-side control and approval flow support.
       const apiKey = 'sk-search';
       const endpoint = 'Anthropic (via LiteLLM)';
       const options = {
@@ -393,12 +395,8 @@ describe('getOpenAIConfig - Anthropic Compatibility', () => {
             'anthropic-beta': 'prompt-caching-2024-07-31',
           },
         },
-        tools: [
-          {
-            type: 'web_search_20250305',
-            name: 'web_search',
-          },
-        ],
+        // Native web_search is disabled - LangChain tool handles web search instead
+        tools: [],
       });
     });
 
@@ -751,7 +749,9 @@ describe('getOpenAIConfig - Anthropic Compatibility', () => {
         expect(result.llmConfig.topP).toBe(0.95);
       });
 
-      it('should handle defaultParams with web_search', () => {
+      it('should handle defaultParams with web_search (native web_search disabled)', () => {
+        // Native web_search is intentionally disabled - we use the LangChain @langchain/anthropic
+        // web search tool instead for client-side control and approval flow support.
         const apiKey = 'sk-web-default';
         const result = getOpenAIConfig(apiKey, {
           modelOptions: {
@@ -764,12 +764,8 @@ describe('getOpenAIConfig - Anthropic Compatibility', () => {
           reverseProxyUrl: 'https://api.anthropic.com',
         });
 
-        expect(result.tools).toEqual([
-          {
-            type: 'web_search_20250305',
-            name: 'web_search',
-          },
-        ]);
+        // Native web_search is disabled - LangChain tool handles web search instead
+        expect(result.tools).toEqual([]);
       });
 
       it('should allow addParams to override defaultParams web_search', () => {
