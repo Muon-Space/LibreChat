@@ -12,6 +12,7 @@ const {
   MCPOAuthHandler,
   normalizeServerName,
   convertWithResolvedRefs,
+  MCPToolCallValidationHandler,
 } = require('@librechat/api');
 const {
   Time,
@@ -151,6 +152,28 @@ function createOAuthCallback({ runStepEmitter, runStepDeltaEmitter }) {
   return function (authURL) {
     runStepEmitter();
     runStepDeltaEmitter(authURL);
+  };
+}
+
+/**
+ * Creates a function to send validation completion event to the client.
+ * @param {object} params
+ * @param {ServerResponse} params.res - The Express response object for sending events.
+ * @param {string} params.stepId - The ID of the step in the flow.
+ * @param {ToolCallChunk} params.toolCall - The tool call object containing tool information.
+ */
+function createValidationEnd({ res, stepId, toolCall }) {
+  return async function () {
+    /** @type {{ id: string; delta: AgentToolCallDelta }} */
+    const data = {
+      id: stepId,
+      delta: {
+        type: StepTypes.TOOL_CALLS,
+        tool_calls: [{ ...toolCall }],
+      },
+    };
+    sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data });
+    logger.debug('[MCP Validation] Sent tool call validation success to client');
   };
 }
 
@@ -360,6 +383,58 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         derivedSignal.addEventListener('abort', abortHandler, { once: true });
       }
 
+      // Tool call validation flow - requires user approval before executing
+      const validationFlowType = MCPToolCallValidationHandler.getFlowType();
+
+      // Initiate validation flow - get the validation ID and metadata
+      const { validationId, flowMetadata } =
+        await MCPToolCallValidationHandler.initiateValidationFlow(
+          userId,
+          serverName,
+          toolName,
+          typeof toolArguments === 'string' ? { input: toolArguments } : toolArguments,
+        );
+
+      // Create validation end function for after approval
+      const validationEnd = createValidationEnd({
+        res,
+        stepId,
+        toolCall,
+      });
+
+      // First, send the validation request SSE event to the client
+      // This must happen BEFORE we start waiting, so the client can show the approval UI
+      /** @type {{ id: string; delta: AgentToolCallDelta }} */
+      const validationData = {
+        id: stepId,
+        delta: {
+          type: StepTypes.TOOL_CALLS,
+          tool_calls: [{ ...toolCall, args: '' }],
+          validation: validationId,
+          expires_at: Date.now() + Time.TEN_MINUTES,
+        },
+      };
+      sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
+      logger.info(`[MCP Validation] Sent tool call validation request to client: ${validationId}, stepId: ${stepId}`);
+
+      // Now wait for user to approve the tool call
+      // createFlow will create the flow state and block until it's completed/rejected
+      try {
+        logger.info(`[MCP Validation] Waiting for user approval: ${validationId}`);
+        await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
+        logger.info(`[MCP Validation] Tool call approved by user: ${serverName}/${toolName}`);
+        // Send validation success to client
+        await validationEnd();
+      } catch (validationError) {
+        logger.warn(
+          `[MCP Validation] Tool call validation failed for ${serverName}/${toolName}:`,
+          validationError,
+        );
+        throw new Error(
+          `Tool call validation required for ${serverName}/${toolName}. User rejected or validation timed out.`,
+        );
+      }
+
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
@@ -396,6 +471,18 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         `[MCP][${serverName}][${toolName}][User: ${userId}] Error calling MCP tool:`,
         error,
       );
+
+      /** Validation error - user rejected or timeout */
+      const isValidationError =
+        error.message?.includes('validation required') ||
+        error.message?.includes('User rejected') ||
+        error.message?.includes('mcp_tool_validation');
+
+      if (isValidationError) {
+        throw new Error(
+          `Tool call for ${serverName}/${toolName} was not approved by the user.`,
+        );
+      }
 
       /** OAuth error, provide a helpful message */
       const isOAuthError =

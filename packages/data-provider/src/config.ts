@@ -270,6 +270,36 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.ocr,
 ];
 
+/**
+ * Tool approval configuration schema.
+ * Defines which tools require user approval before execution.
+ *
+ * @example
+ * ```yaml
+ * # Require approval for all tools
+ * toolApproval:
+ *   required: true
+ *
+ * # Require approval for specific tools
+ * toolApproval:
+ *   required:
+ *     - web_search
+ *     - "mcp:*"  # all MCP tools
+ *   excluded:
+ *     - calculator
+ * ```
+ */
+export const toolApprovalSchema = z
+  .object({
+    /** Whether approval is required - true for all tools, or array of tool name patterns */
+    required: z.union([z.boolean(), z.array(z.string())]).optional(),
+    /** Tool name patterns to exclude from approval requirement */
+    excluded: z.array(z.string()).optional(),
+  })
+  .optional();
+
+export type TToolApproval = z.infer<typeof toolApprovalSchema>;
+
 export const agentsEndpointSchema = baseEndpointSchema
   .merge(
     z.object({
@@ -285,6 +315,8 @@ export const agentsEndpointSchema = baseEndpointSchema
         .array(z.nativeEnum(AgentCapabilities))
         .optional()
         .default(defaultAgentCapabilities),
+      /** Tool approval configuration - which tools require user approval before execution */
+      toolApproval: toolApprovalSchema,
     }),
   )
   .default({

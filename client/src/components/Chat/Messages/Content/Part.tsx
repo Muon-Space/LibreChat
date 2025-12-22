@@ -145,6 +145,7 @@ const Part = memo(
             isSubmitting={isSubmitting}
             attachments={attachments}
             auth={toolCall.auth}
+            validation={toolCall.validation}
             expires_at={toolCall.expires_at}
             isLast={isLast}
           />

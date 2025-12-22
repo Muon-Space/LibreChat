@@ -72,11 +72,13 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
   const artifactPromises = [];
   const { contentParts, aggregateContent } = createContentAggregator();
   const toolEndCallback = createToolEndCallback({ req, res, artifactPromises });
+  const toolApprovalConfig = appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval;
   const eventHandlers = getDefaultHandlers({
     res,
     aggregateContent,
     toolEndCallback,
     collectedUsage,
+    toolApprovalConfig,
   });
 
   if (!endpointOption.agent) {

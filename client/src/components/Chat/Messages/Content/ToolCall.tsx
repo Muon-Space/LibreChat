@@ -1,9 +1,9 @@
 import { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Button } from '@librechat/client';
-import { TriangleAlert } from 'lucide-react';
+import { TriangleAlert, CheckCircle, XCircle } from 'lucide-react';
 import { actionDelimiter, actionDomainSeparator, Constants } from 'librechat-data-provider';
 import type { TAttachment } from 'librechat-data-provider';
-import { useLocalize, useProgress } from '~/hooks';
+import { useLocalize, useProgress, useAuthContext } from '~/hooks';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
@@ -18,6 +18,7 @@ export default function ToolCall({
   output,
   attachments,
   auth,
+  validation,
 }: {
   initialProgress: number;
   isLast?: boolean;
@@ -27,6 +28,7 @@ export default function ToolCall({
   output?: string | null;
   attachments?: TAttachment[];
   auth?: string;
+  validation?: string;
   expires_at?: number;
 }) {
   const localize = useLocalize();
@@ -97,6 +99,77 @@ export default function ToolCall({
       return '';
     }
   }, [auth]);
+
+  // Validation state for tool call approval
+  const [validationConfirmed, setValidationConfirmed] = useState(false);
+  const [validationRejected, setValidationRejected] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const { token } = useAuthContext();
+
+  const handleValidationConfirm = async () => {
+    if (!validation || validationConfirmed || validationRejected) {
+      return;
+    }
+
+    setIsConfirming(true);
+    setValidationError(null);
+
+    try {
+      const response = await fetch(`/api/mcp/validation/confirm/${validation}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to confirm validation');
+      }
+
+      setValidationConfirmed(true);
+    } catch (error) {
+      logger.error('Failed to confirm tool call validation:', error);
+      setValidationError(error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const handleValidationReject = async () => {
+    if (!validation || validationConfirmed || validationRejected) {
+      return;
+    }
+
+    setIsRejecting(true);
+    setValidationError(null);
+
+    try {
+      const response = await fetch(`/api/mcp/validation/reject/${validation}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ reason: 'User rejected tool call' }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to reject validation');
+      }
+
+      setValidationRejected(true);
+    } catch (error) {
+      logger.error('Failed to reject tool call validation:', error);
+      setValidationError(error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsRejecting(false);
+    }
+  };
 
   const progress = useProgress(initialProgress);
   const cancelled = (!isSubmitting && progress < 1) || error === true;
@@ -240,6 +313,61 @@ export default function ToolCall({
             {localize('com_assistants_allow_sites_you_trust')}
           </p>
         </div>
+      )}
+      {/* Tool call validation UI - requires user approval */}
+      {validation != null &&
+        validation &&
+        progress < 1 &&
+        !cancelled &&
+        !validationConfirmed &&
+        !validationRejected && (
+          <div className="flex w-full flex-col gap-2.5">
+            <div className="mb-1 mt-2 flex gap-2">
+              <Button
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium"
+                variant="default"
+                disabled={isConfirming || isRejecting}
+                onClick={handleValidationConfirm}
+              >
+                <CheckCircle className="h-4 w-4" />
+                {isConfirming
+                  ? localize('com_ui_confirming')
+                  : localize('com_ui_confirm_tool_call')}
+              </Button>
+              <Button
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium"
+                variant="outline"
+                disabled={isConfirming || isRejecting}
+                onClick={handleValidationReject}
+              >
+                <XCircle className="h-4 w-4" />
+                {isRejecting ? localize('com_ui_rejecting') : localize('com_ui_reject_tool_call')}
+              </Button>
+            </div>
+            {validationError && (
+              <p className="flex items-center text-xs text-text-warning">
+                <TriangleAlert className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
+                {validationError}
+              </p>
+            )}
+            <p className="flex items-center text-xs text-text-secondary">
+              <TriangleAlert className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
+              {localize('com_ui_tool_call_requires_approval')}
+            </p>
+          </div>
+        )}
+      {/* Show confirmation status */}
+      {validation != null && validationConfirmed && (
+        <p className="mt-2 flex items-center text-xs text-green-600 dark:text-green-400">
+          <CheckCircle className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
+          {localize('com_ui_tool_call_approved')}
+        </p>
+      )}
+      {validation != null && validationRejected && (
+        <p className="mt-2 flex items-center text-xs text-red-600 dark:text-red-400">
+          <XCircle className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
+          {localize('com_ui_tool_call_rejected')}
+        </p>
       )}
       {attachments && attachments.length > 0 && <AttachmentGroup attachments={attachments} />}
     </>

@@ -13,6 +13,7 @@ const {
   MCPTokenStorage,
   getUserMCPAuthMap,
   generateCheckAccess,
+  MCPToolCallValidationHandler,
 } = require('@librechat/api');
 const {
   getMCPManager,
@@ -588,7 +589,131 @@ async function getOAuthHeaders(serverName, userId) {
   return serverConfig?.oauth_headers ?? {};
 }
 
-/** 
+/**
+ * Tool Call Validation Routes
+ * These routes handle manual approval of MCP tool calls by users
+ */
+
+/**
+ * Confirm/approve a tool call validation
+ * This endpoint is called when the user clicks the "Confirm" button in the UI
+ * @route POST /api/mcp/validation/confirm/:validationId
+ */
+router.post('/validation/confirm/:validationId', requireJwtAuth, async (req, res) => {
+  try {
+    const { validationId } = req.params;
+    const user = req.user;
+
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    // Verify the validation belongs to this user (validationId starts with userId)
+    if (!validationId.startsWith(`${user.id}:`)) {
+      logger.warn('[MCP Validation] User attempted to confirm validation for another user', {
+        userId: user.id,
+        validationId,
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    logger.debug('[MCP Validation] Confirming validation', { validationId, userId: user.id });
+
+    const flowsCache = getLogStores(CacheKeys.FLOWS);
+    const flowManager = getFlowStateManager(flowsCache);
+
+    await MCPToolCallValidationHandler.completeValidationFlow(validationId, flowManager);
+
+    res.json({
+      success: true,
+      message: 'Tool call validation confirmed',
+    });
+  } catch (error) {
+    logger.error('[MCP Validation] Failed to confirm validation', error);
+    res.status(500).json({ error: error.message || 'Failed to confirm validation' });
+  }
+});
+
+/**
+ * Reject/deny a tool call validation
+ * This endpoint is called when the user clicks the "Reject" button in the UI
+ * @route POST /api/mcp/validation/reject/:validationId
+ */
+router.post('/validation/reject/:validationId', requireJwtAuth, async (req, res) => {
+  try {
+    const { validationId } = req.params;
+    const { reason } = req.body;
+    const user = req.user;
+
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    // Verify the validation belongs to this user
+    if (!validationId.startsWith(`${user.id}:`)) {
+      logger.warn('[MCP Validation] User attempted to reject validation for another user', {
+        userId: user.id,
+        validationId,
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    logger.debug('[MCP Validation] Rejecting validation', { validationId, userId: user.id, reason });
+
+    const flowsCache = getLogStores(CacheKeys.FLOWS);
+    const flowManager = getFlowStateManager(flowsCache);
+
+    await MCPToolCallValidationHandler.rejectValidationFlow(validationId, flowManager, reason);
+
+    res.json({
+      success: true,
+      message: 'Tool call validation rejected',
+    });
+  } catch (error) {
+    logger.error('[MCP Validation] Failed to reject validation', error);
+    res.status(500).json({ error: error.message || 'Failed to reject validation' });
+  }
+});
+
+/**
+ * Get validation flow status
+ * @route GET /api/mcp/validation/status/:validationId
+ */
+router.get('/validation/status/:validationId', requireJwtAuth, async (req, res) => {
+  try {
+    const { validationId } = req.params;
+    const user = req.user;
+
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    // Verify the validation belongs to this user
+    if (!validationId.startsWith(`${user.id}:`)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const flowsCache = getLogStores(CacheKeys.FLOWS);
+    const flowManager = getFlowStateManager(flowsCache);
+
+    const flowState = await MCPToolCallValidationHandler.getFlowState(validationId, flowManager);
+
+    if (!flowState) {
+      return res.status(404).json({ error: 'Validation flow not found' });
+    }
+
+    res.json({
+      success: true,
+      validationId,
+      metadata: flowState,
+    });
+  } catch (error) {
+    logger.error('[MCP Validation] Failed to get validation status', error);
+    res.status(500).json({ error: 'Failed to get validation status' });
+  }
+});
+
+/**
 MCP Server CRUD Routes (User-Managed MCP Servers)
 */
 

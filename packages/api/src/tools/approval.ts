@@ -1,0 +1,143 @@
+import { logger } from '@librechat/data-schemas';
+import type { TToolApproval } from 'librechat-data-provider';
+import { MCPToolCallValidationHandler } from '~/mcp/validation';
+
+/**
+ * Checks if a tool requires approval based on the toolApproval config.
+ *
+ * @param toolName - The name of the tool
+ * @param toolApproval - The tool approval configuration
+ * @returns true if the tool requires approval, false otherwise
+ */
+export function requiresApproval(
+  toolName: string,
+  toolApproval: TToolApproval | undefined,
+): boolean {
+  logger.debug(`[requiresApproval] toolName=${toolName}, config=${JSON.stringify(toolApproval)}`);
+
+  if (!toolApproval) {
+    logger.debug('[requiresApproval] No toolApproval config, returning false');
+    return false;
+  }
+
+  const { required, excluded } = toolApproval;
+  logger.debug(`[requiresApproval] required=${JSON.stringify(required)}, excluded=${JSON.stringify(excluded)}`);
+
+  // If required is not set, no approval needed
+  if (required === undefined || required === false) {
+    logger.debug('[requiresApproval] required is undefined or false, returning false');
+    return false;
+  }
+
+  // Check if tool is in excluded list
+  if (excluded && excluded.length > 0) {
+    for (const pattern of excluded) {
+      if (matchesPattern(toolName, pattern)) {
+        return false;
+      }
+    }
+  }
+
+  // If required is true, all tools require approval (except excluded)
+  if (required === true) {
+    logger.debug('[requiresApproval] required is true, returning true');
+    return true;
+  }
+
+  // If required is an array, check if tool matches any pattern
+  if (Array.isArray(required)) {
+    for (const pattern of required) {
+      const matches = matchesPattern(toolName, pattern);
+      logger.debug(`[requiresApproval] Checking pattern "${pattern}" against "${toolName}": ${matches}`);
+      if (matches) {
+        logger.debug(`[requiresApproval] Tool "${toolName}" matches pattern "${pattern}", returning true`);
+        return true;
+      }
+    }
+  }
+
+  logger.debug(`[requiresApproval] No patterns matched for "${toolName}", returning false`);
+  return false;
+}
+
+/**
+ * Matches a tool name against a pattern.
+ * Supports:
+ * - Exact match: "web_search"
+ * - Wildcard patterns: "mcp:*" (matches any MCP tool)
+ * - Prefix patterns: "image_*" (matches image_gen, image_edit, etc.)
+ *
+ * @param toolName - The name of the tool
+ * @param pattern - The pattern to match against
+ * @returns true if the tool name matches the pattern
+ */
+export function matchesPattern(toolName: string, pattern: string): boolean {
+  // Exact match
+  if (pattern === toolName) {
+    return true;
+  }
+
+  // Special case: "all" matches everything
+  if (pattern === 'all') {
+    return true;
+  }
+
+  // Special case: "mcp:*" or "mcp_*" should match ALL MCP tools
+  // MCP tools can have names like "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
+  if (pattern === 'mcp:*' || pattern === 'mcp_*') {
+    const isMcpTool = toolName.includes(':::mcp:::') || /_mcp_/.test(toolName);
+    return isMcpTool;
+  }
+
+  // Wildcard pattern: "prefix_*" matches tools starting with prefix
+  if (pattern.endsWith('*')) {
+    const prefix = pattern.slice(0, -1);
+    return toolName.startsWith(prefix);
+  }
+
+  return false;
+}
+
+/**
+ * Gets the server name for a tool.
+ * For MCP tools, extracts from the tool name.
+ * For other tools, returns 'builtin'.
+ *
+ * @param toolName - The name of the tool
+ * @returns The server name
+ */
+export function getToolServerName(toolName: string): string {
+  // MCP tools have format: "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
+  if (toolName.includes(':::mcp:::')) {
+    const parts = toolName.split(':::mcp:::');
+    return parts[1] || 'mcp';
+  }
+  // Handle "_mcp_" format: "search_gmail_messages_mcp_google" -> "google"
+  const mcpMatch = toolName.match(/_mcp_([^_]+)$/);
+  if (mcpMatch) {
+    return mcpMatch[1];
+  }
+  return 'builtin';
+}
+
+/**
+ * Gets the base tool name (without server name for MCP tools).
+ *
+ * @param toolName - The full tool name
+ * @returns The base tool name
+ */
+export function getBaseToolName(toolName: string): string {
+  // MCP tools have format: "toolName:::mcp:::serverName" or "toolName_mcp_serverName"
+  if (toolName.includes(':::mcp:::')) {
+    const parts = toolName.split(':::mcp:::');
+    return parts[0] || toolName;
+  }
+  // Handle "_mcp_" format: "search_gmail_messages_mcp_google" -> "search_gmail_messages"
+  const mcpMatch = toolName.match(/^(.+)_mcp_[^_]+$/);
+  if (mcpMatch) {
+    return mcpMatch[1];
+  }
+  return toolName;
+}
+
+export { MCPToolCallValidationHandler };

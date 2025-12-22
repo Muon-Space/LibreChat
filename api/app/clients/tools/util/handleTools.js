@@ -349,6 +349,8 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 - Image: "See photo\\ue202turn0image0."
 
 **CRITICAL:** Output escape sequences EXACTLY as shown. Do NOT substitute with † or other symbols. Place anchors AFTER punctuation. Cite every non-obvious fact/quote. NEVER use markdown links, [1], footnotes, or HTML tags.`.trim();
+
+        // Create the base search tool
         return createSearchTool({
           ...result.authResult,
           onSearchResults,
