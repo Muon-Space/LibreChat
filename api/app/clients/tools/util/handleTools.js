@@ -11,18 +11,13 @@ const {
   mcpToolPattern,
   loadWebSearchAuth,
   buildImageToolContext,
-  loadAnthropicVertexCredentials,
-  getVertexCredentialOptions,
-  isEnabled,
 } = require('@librechat/api');
 const { getMCPServersRegistry } = require('~/config');
 const {
   Tools,
-  AuthKeys,
   Constants,
   Permissions,
   EToolResources,
-  EModelEndpoint,
   PermissionTypes,
   replaceSpecialVars,
 } = require('librechat-data-provider');
@@ -49,7 +44,6 @@ const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSe
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { createMCPTool, createMCPTools } = require('~/server/services/MCP');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
-const { createAnthropicSearchTool } = require('~/server/services/Tools/anthropicSearch');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getRoleByName } = require('~/models/Role');
 
@@ -330,12 +324,12 @@ const loadTools = async ({
       };
       continue;
     } else if (tool === Tools.web_search) {
+      const result = await loadWebSearchAuth({
+        userId: user,
+        loadAuthValues,
+        webSearchConfig: webSearch,
+      });
       const { onSearchResults, onGetHighlights } = options?.[Tools.web_search] ?? {};
-
-      // Check if the agent is using an Anthropic model
-      const isAnthropicProvider = agent?.provider === EModelEndpoint.anthropic;
-      logger.info(`[handleTools] Loading web_search tool - agent?.provider: ${agent?.provider}, isAnthropicProvider: ${isAnthropicProvider}`);
-
       requestedTools[tool] = async () => {
         toolContextMap[tool] = `# \`${tool}\`:
 Current Date & Time: ${replaceSpecialVars({ text: '{{iso_datetime}}' })}
@@ -356,60 +350,7 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 
 **CRITICAL:** Output escape sequences EXACTLY as shown. Do NOT substitute with † or other symbols. Place anchors AFTER punctuation. Cite every non-obvious fact/quote. NEVER use markdown links, [1], footnotes, or HTML tags.`.trim();
 
-        // Use Anthropic search tool for Anthropic models - no fallback to Serper needed
-        if (isAnthropicProvider) {
-          // Check for Vertex AI configuration
-          const appConfig = options.req?.config;
-          const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
-          const envVertexEnabled = process.env.ANTHROPIC_USE_VERTEX;
-          const useVertexAI = vertexConfig?.enabled || isEnabled(envVertexEnabled);
-
-          logger.info(`[handleTools] Anthropic web_search - vertexConfig?.enabled: ${vertexConfig?.enabled}, ANTHROPIC_USE_VERTEX env: ${envVertexEnabled}, useVertexAI: ${useVertexAI}`);
-
-          let credentials = {};
-          let vertexOptions;
-
-          if (useVertexAI) {
-            // Load Vertex AI credentials
-            const credentialOptions = vertexConfig ? getVertexCredentialOptions(vertexConfig) : undefined;
-            credentials = await loadAnthropicVertexCredentials(credentialOptions);
-
-            if (vertexConfig) {
-              vertexOptions = {
-                region: vertexConfig.region,
-                projectId: vertexConfig.projectId,
-              };
-            }
-            logger.info('[handleTools] Using Anthropic search tool with Vertex AI');
-          } else {
-            // Use direct API key
-            const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-            if (!anthropicApiKey) {
-              throw new Error('Anthropic web search requires ANTHROPIC_API_KEY or Vertex AI configuration');
-            }
-            credentials[AuthKeys.ANTHROPIC_API_KEY] = anthropicApiKey;
-            logger.info('[handleTools] Using Anthropic search tool with API key');
-          }
-
-          // For Anthropic agents, use Anthropic's native search - no fallback to Serper
-          return createAnthropicSearchTool({
-            credentials,
-            vertexOptions,
-            model: agent?.model || 'claude-sonnet-4-5-20250929',
-            onSearchResults,
-            onGetHighlights,
-          });
-        }
-
-        // For non-Anthropic providers, use Serper/SearXNG
-        logger.info('[handleTools] Using web search (Serper/SearXNG)');
-
-        const result = await loadWebSearchAuth({
-          userId: user,
-          loadAuthValues,
-          webSearchConfig: webSearch,
-        });
-
+        // Create the base search tool
         return createSearchTool({
           ...result.authResult,
           onSearchResults,

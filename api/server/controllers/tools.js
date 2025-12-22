@@ -8,7 +8,6 @@ const {
   Permissions,
   ToolCallTypes,
   PermissionTypes,
-  EModelEndpoint,
 } = require('librechat-data-provider');
 const { processFileURL, uploadImageBuffer } = require('~/server/services/Files/process');
 const { processCodeOutput } = require('~/server/services/Files/Code/process');
@@ -27,31 +26,8 @@ const toolAccessPermType = {
 };
 
 /**
- * Checks if Anthropic web search credentials are available.
- * Anthropic provides native web search capability via their API.
- *
- * @param {object} appConfig - The app configuration
- * @returns {boolean} Whether Anthropic credentials are available for web search
- */
-const isAnthropicWebSearchAvailable = (appConfig) => {
-  // Check if Anthropic API key is available via environment variable
-  if (process.env.ANTHROPIC_API_KEY) {
-    return true;
-  }
-
-  // Check if Vertex AI is configured for Anthropic
-  const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
-  if (vertexConfig?.enabled) {
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Verifies web search authentication, ensuring at least one of:
- * 1. Traditional web search (Serper/SearXNG) has all required categories authenticated
- * 2. Anthropic credentials are available (provides native web search)
+ * Verifies web search authentication, ensuring each category has at least
+ * one fully authenticated service.
  *
  * @param {ServerRequest} req - The request object
  * @param {ServerResponse} res - The response object
@@ -70,18 +46,9 @@ const verifyWebSearchAuth = async (req, res) => {
       throwError: false,
     });
 
-    // Check if Anthropic credentials are available as an alternative to traditional web search
-    const anthropicAvailable = isAnthropicWebSearchAvailable(appConfig);
-
-    // Web search is authenticated if either:
-    // 1. Traditional web search (Serper/SearXNG) is fully configured, OR
-    // 2. Anthropic credentials are available
-    const authenticated = result.authenticated || anthropicAvailable;
-
     return res.status(200).json({
-      authenticated,
+      authenticated: result.authenticated,
       authTypes: result.authTypes,
-      anthropicAvailable,
     });
   } catch (error) {
     console.error('Error in verifyWebSearchAuth:', error);
