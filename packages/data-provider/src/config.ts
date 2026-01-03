@@ -377,8 +377,8 @@ export type TVertexModelConfig = z.infer<typeof vertexModelConfigSchema>;
  * Similar to Azure configuration, this allows running Anthropic models through Google Cloud.
  */
 export const vertexAISchema = z.object({
-  /** Enable Vertex AI mode for Anthropic */
-  enabled: z.boolean().default(false),
+  /** Enable Vertex AI mode for Anthropic (defaults to true when vertex config is present) */
+  enabled: z.boolean().optional(),
   /** Google Cloud Project ID (optional - auto-detected from service key file if not provided) */
   projectId: z.string().optional(),
   /** Vertex AI region (e.g., 'us-east5', 'europe-west1') */
@@ -910,6 +910,11 @@ export const configSchema = z.object({
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),
   mcpServers: MCPServersSchema.optional(),
+  mcpSettings: z
+    .object({
+      allowedDomains: z.array(z.string()).optional(),
+    })
+    .optional(),
   interface: interfaceSchema,
   turnstile: turnstileSchema.optional(),
   fileStrategy: fileSourceSchema.default(FileSources.local),
@@ -1301,6 +1306,7 @@ export enum InfiniteCollections {
  */
 export enum Time {
   ONE_DAY = 86400000,
+  TWELVE_HOURS = 43200000,
   ONE_HOUR = 3600000,
   THIRTY_MINUTES = 1800000,
   TEN_MINUTES = 600000,
