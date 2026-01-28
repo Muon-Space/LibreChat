@@ -67,6 +67,21 @@ const BaseOptionsSchema = z.object({
       skip_code_challenge_check: z.boolean().optional(),
       /** OAuth revocation endpoint (optional - can be auto-discovered) */
       revocation_endpoint: z.string().url().optional(),
+      /** Maps non-standard token response fields to standard OAuth fields using dot notation paths */
+      token_response_mapping: z
+        .object({
+          /** Path to access_token in response (e.g., "authed_user.access_token") */
+          access_token: z.string(),
+          /** Path to token_type in response */
+          token_type: z.string().optional(),
+          /** Path to scope in response */
+          scope: z.string().optional(),
+          /** Path to expires_in in response */
+          expires_in: z.string().optional(),
+          /** Path to refresh_token in response */
+          refresh_token: z.string().optional(),
+        })
+        .optional(),
       /** OAuth revocation endpoint authentication methods supported (optional - can be auto-discovered) */
       revocation_endpoint_auth_methods_supported: z.array(z.string()).optional(),
     })

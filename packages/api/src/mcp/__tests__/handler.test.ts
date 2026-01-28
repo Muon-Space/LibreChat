@@ -1135,4 +1135,254 @@ describe('MCPOAuthHandler - Configurable OAuth Metadata', () => {
       );
     });
   });
+
+  describe('Token Response Mapping', () => {
+    const originalFetch = global.fetch;
+    const mockFetch = jest.fn() as unknown as jest.MockedFunction<typeof fetch>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      global.fetch = mockFetch;
+    });
+
+    afterEach(() => {
+      mockFetch.mockClear();
+    });
+
+    afterAll(() => {
+      global.fetch = originalFetch;
+    });
+
+    describe('initiateOAuthFlow with token_response_mapping', () => {
+      it('should include tokenResponseMapping in flow metadata', async () => {
+        const config = {
+          authorization_url: 'https://slack.com/oauth/v2/authorize',
+          token_url: 'https://slack.com/api/oauth.v2.access',
+          client_id: 'test-client-id',
+          client_secret: 'test-client-secret',
+          token_response_mapping: {
+            access_token: 'authed_user.access_token',
+            token_type: 'authed_user.token_type',
+            scope: 'authed_user.scope',
+          },
+        };
+
+        mockStartAuthorization.mockResolvedValueOnce({
+          authorizationUrl: new URL('https://slack.com/oauth/v2/authorize?client_id=test'),
+          codeVerifier: 'test-code-verifier',
+        });
+
+        const result = await MCPOAuthHandler.initiateOAuthFlow(
+          'slack',
+          'https://mcp.slack.example.com',
+          'user-123',
+          {},
+          config,
+        );
+
+        expect(result.flowMetadata.tokenResponseMapping).toEqual({
+          access_token: 'authed_user.access_token',
+          token_type: 'authed_user.token_type',
+          scope: 'authed_user.scope',
+        });
+      });
+    });
+
+    describe('completeOAuthFlow with token_response_mapping', () => {
+      it('should use custom token exchange when mapping is configured', async () => {
+        const slackResponse = {
+          ok: true,
+          authed_user: {
+            id: 'U1234567',
+            access_token: 'xoxp-slack-token',
+            token_type: 'user',
+            scope: 'channels:history,search:read',
+          },
+        };
+
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => slackResponse,
+        } as Response);
+
+        const mockFlowManager = {
+          getFlowState: jest.fn().mockResolvedValue({
+            status: 'PENDING',
+            metadata: {
+              serverName: 'slack',
+              serverUrl: 'https://mcp.slack.example.com',
+              codeVerifier: 'test-verifier',
+              clientInfo: {
+                client_id: 'test-client-id',
+                client_secret: 'test-client-secret',
+                redirect_uris: ['http://localhost:3080/api/mcp/slack/oauth/callback'],
+              },
+              metadata: {
+                token_endpoint: 'https://slack.com/api/oauth.v2.access',
+                authorization_endpoint: 'https://slack.com/oauth/v2/authorize',
+              },
+              tokenResponseMapping: {
+                access_token: 'authed_user.access_token',
+                token_type: 'authed_user.token_type',
+                scope: 'authed_user.scope',
+              },
+            } as MCPOAuthFlowMetadata,
+          }),
+          completeFlow: jest.fn(),
+          failFlow: jest.fn(),
+        } as unknown as FlowStateManager<MCPOAuthTokens>;
+
+        const result = await MCPOAuthHandler.completeOAuthFlow(
+          'user-123:slack',
+          'auth-code-123',
+          mockFlowManager,
+          {},
+        );
+
+        // Verify custom exchange was used (not the SDK)
+        expect(mockFetch).toHaveBeenCalledWith(
+          'https://slack.com/api/oauth.v2.access',
+          expect.objectContaining({
+            method: 'POST',
+            headers: expect.objectContaining({
+              'Content-Type': 'application/x-www-form-urlencoded',
+            }),
+          }),
+        );
+
+        // Verify tokens were extracted from nested response
+        expect(result.access_token).toBe('xoxp-slack-token');
+        expect(result.token_type).toBe('user');
+        expect(result.scope).toBe('channels:history,search:read');
+        expect(result.obtained_at).toBeDefined();
+
+        // Verify SDK exchange was NOT called
+        expect(mockExchangeAuthorization).not.toHaveBeenCalled();
+      });
+
+      it('should use standard SDK exchange when no mapping is configured', async () => {
+        mockExchangeAuthorization.mockResolvedValueOnce({
+          access_token: 'standard-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+
+        const mockFlowManager = {
+          getFlowState: jest.fn().mockResolvedValue({
+            status: 'PENDING',
+            metadata: {
+              serverName: 'standard-server',
+              serverUrl: 'https://standard.example.com',
+              codeVerifier: 'test-verifier',
+              clientInfo: {
+                client_id: 'test-client-id',
+                redirect_uris: ['http://localhost:3080/api/mcp/standard-server/oauth/callback'],
+              },
+              metadata: {
+                token_endpoint: 'https://standard.example.com/oauth/token',
+                authorization_endpoint: 'https://standard.example.com/oauth/authorize',
+              },
+              // No tokenResponseMapping
+            } as MCPOAuthFlowMetadata,
+          }),
+          completeFlow: jest.fn(),
+          failFlow: jest.fn(),
+        } as unknown as FlowStateManager<MCPOAuthTokens>;
+
+        const result = await MCPOAuthHandler.completeOAuthFlow(
+          'user-123:standard-server',
+          'auth-code-123',
+          mockFlowManager,
+          {},
+        );
+
+        // Verify SDK exchange was used
+        expect(mockExchangeAuthorization).toHaveBeenCalled();
+
+        expect(result.access_token).toBe('standard-token');
+        expect(result.token_type).toBe('Bearer');
+      });
+
+      it('should throw error when custom exchange fails to find access_token', async () => {
+        const invalidResponse = {
+          ok: false,
+          error: 'invalid_code',
+        };
+
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => invalidResponse,
+        } as Response);
+
+        const mockFlowManager = {
+          getFlowState: jest.fn().mockResolvedValue({
+            status: 'PENDING',
+            metadata: {
+              serverName: 'slack',
+              serverUrl: 'https://mcp.slack.example.com',
+              codeVerifier: 'test-verifier',
+              clientInfo: {
+                client_id: 'test-client-id',
+                client_secret: 'test-client-secret',
+                redirect_uris: ['http://localhost:3080/api/mcp/slack/oauth/callback'],
+              },
+              metadata: {
+                token_endpoint: 'https://slack.com/api/oauth.v2.access',
+                authorization_endpoint: 'https://slack.com/oauth/v2/authorize',
+              },
+              tokenResponseMapping: {
+                access_token: 'authed_user.access_token',
+              },
+            } as MCPOAuthFlowMetadata,
+          }),
+          completeFlow: jest.fn(),
+          failFlow: jest.fn(),
+        } as unknown as FlowStateManager<MCPOAuthTokens>;
+
+        await expect(
+          MCPOAuthHandler.completeOAuthFlow('user-123:slack', 'auth-code-123', mockFlowManager, {}),
+        ).rejects.toThrow('Token response mapping failed: access_token not found');
+      });
+    });
+
+    describe('refreshOAuthTokens with token_response_mapping', () => {
+      it('should use mapping when refreshing tokens', async () => {
+        const slackRefreshResponse = {
+          ok: true,
+          authed_user: {
+            access_token: 'xoxp-refreshed-token',
+            token_type: 'user',
+            scope: 'channels:history',
+          },
+        };
+
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => slackRefreshResponse,
+        } as Response);
+
+        const config = {
+          token_url: 'https://slack.com/api/oauth.v2.access',
+          client_id: 'test-client-id',
+          client_secret: 'test-client-secret',
+          token_response_mapping: {
+            access_token: 'authed_user.access_token',
+            token_type: 'authed_user.token_type',
+            scope: 'authed_user.scope',
+          },
+        };
+
+        const result = await MCPOAuthHandler.refreshOAuthTokens(
+          'refresh-token-123',
+          { serverName: 'slack' },
+          {},
+          config,
+        );
+
+        expect(result.access_token).toBe('xoxp-refreshed-token');
+        expect(result.token_type).toBe('user');
+        expect(result.scope).toBe('channels:history');
+      });
+    });
+  });
 });

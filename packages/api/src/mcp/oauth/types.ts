@@ -1,6 +1,19 @@
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { FlowMetadata } from '~/flow/types';
 
+export interface TokenResponseMapping {
+  /** Path to access_token in response (e.g., "authed_user.access_token") */
+  access_token: string;
+  /** Path to token_type in response */
+  token_type?: string;
+  /** Path to scope in response */
+  scope?: string;
+  /** Path to expires_in in response */
+  expires_in?: string;
+  /** Path to refresh_token in response */
+  refresh_token?: string;
+}
+
 export interface OAuthMetadata {
   /** OAuth authorization endpoint */
   authorization_endpoint: string;
@@ -88,6 +101,8 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   clientInfo?: OAuthClientInformation;
   metadata?: OAuthMetadata;
   resourceMetadata?: OAuthProtectedResourceMetadata;
+  /** Maps non-standard token response fields to standard OAuth fields */
+  tokenResponseMapping?: TokenResponseMapping;
 }
 
 export interface MCPOAuthTokens extends OAuthTokens {

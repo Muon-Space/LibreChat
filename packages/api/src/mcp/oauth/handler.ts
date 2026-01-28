@@ -17,7 +17,9 @@ import type {
   MCPOAuthFlowMetadata,
   MCPOAuthTokens,
   OAuthMetadata,
+  TokenResponseMapping,
 } from './types';
+import { mapTokenResponse } from './utils';
 import { sanitizeUrlForLogging } from '~/mcp/utils';
 
 /** Type for the OAuth metadata from the SDK */
@@ -143,6 +145,37 @@ export class MCPOAuthHandler {
         headers: newHeaders,
       });
     };
+  }
+
+  /**
+   * Performs a custom token exchange for non-standard OAuth responses (e.g., Slack).
+   * Uses the provided mapping to extract tokens from nested response structures.
+   */
+  private static async customTokenExchange(
+    tokenUrl: string,
+    params: URLSearchParams,
+    headers: Record<string, string>,
+    mapping: TokenResponseMapping,
+  ): Promise<MCPOAuthTokens> {
+    logger.debug(`[MCPOAuth] Custom token exchange to ${sanitizeUrlForLogging(tokenUrl)}`);
+
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        ...headers,
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Custom token exchange failed: ${response.status} - ${errorText}`);
+    }
+
+    const rawResponse = (await response.json()) as Record<string, unknown>;
+    return mapTokenResponse(rawResponse, mapping);
   }
 
   /**
@@ -457,6 +490,7 @@ export class MCPOAuthHandler {
           codeVerifier,
           clientInfo,
           metadata,
+          tokenResponseMapping: config?.token_response_mapping,
         };
 
         logger.debug(
@@ -553,6 +587,7 @@ export class MCPOAuthHandler {
         clientInfo,
         metadata,
         resourceMetadata,
+        tokenResponseMapping: config?.token_response_mapping,
       };
 
       logger.debug(
@@ -616,30 +651,65 @@ export class MCPOAuthHandler {
         resource = undefined;
       }
 
-      const tokens = await exchangeAuthorization(metadata.serverUrl, {
-        redirectUri: metadata.clientInfo.redirect_uris?.[0] || this.getDefaultRedirectUri(),
-        metadata: metadata.metadata as unknown as SDKOAuthMetadata,
-        clientInformation: metadata.clientInfo,
-        codeVerifier: metadata.codeVerifier,
-        authorizationCode,
-        resource,
-        fetchFn: this.createOAuthFetch(oauthHeaders, metadata.clientInfo),
-      });
+      let mcpTokens: MCPOAuthTokens;
+      const tokenResponseMapping = flowMetadata.tokenResponseMapping;
+
+      if (tokenResponseMapping) {
+        // Custom exchange for non-standard responses (e.g., Slack)
+        logger.debug('[MCPOAuth] Using custom token exchange with response mapping', { flowId });
+
+        const tokenUrl = metadata.metadata.token_endpoint;
+        if (!tokenUrl) {
+          throw new Error('Token endpoint not found in OAuth metadata');
+        }
+
+        const params = new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: authorizationCode,
+          redirect_uri: metadata.clientInfo.redirect_uris?.[0] || this.getDefaultRedirectUri(),
+          code_verifier: metadata.codeVerifier,
+        });
+
+        const headers: Record<string, string> = { ...oauthHeaders };
+
+        // Handle client authentication
+        if (metadata.clientInfo.client_secret) {
+          const clientAuth = Buffer.from(
+            `${metadata.clientInfo.client_id}:${metadata.clientInfo.client_secret}`,
+          ).toString('base64');
+          headers['Authorization'] = `Basic ${clientAuth}`;
+        } else if (metadata.clientInfo.client_id) {
+          params.set('client_id', metadata.clientInfo.client_id);
+        }
+
+        mcpTokens = await this.customTokenExchange(tokenUrl, params, headers, tokenResponseMapping);
+      } else {
+        // Standard MCP SDK exchange (existing behavior)
+        const tokens = await exchangeAuthorization(metadata.serverUrl, {
+          redirectUri: metadata.clientInfo.redirect_uris?.[0] || this.getDefaultRedirectUri(),
+          metadata: metadata.metadata as unknown as SDKOAuthMetadata,
+          clientInformation: metadata.clientInfo,
+          codeVerifier: metadata.codeVerifier,
+          authorizationCode,
+          resource,
+          fetchFn: this.createOAuthFetch(oauthHeaders, metadata.clientInfo),
+        });
+
+        mcpTokens = {
+          ...tokens,
+          obtained_at: Date.now(),
+          expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+        };
+      }
 
       logger.debug('[MCPOAuth] Token exchange successful', {
         flowId,
-        has_access_token: !!tokens.access_token,
-        has_refresh_token: !!tokens.refresh_token,
-        expires_in: tokens.expires_in,
-        token_type: tokens.token_type,
-        scope: tokens.scope,
+        has_access_token: !!mcpTokens.access_token,
+        has_refresh_token: !!mcpTokens.refresh_token,
+        expires_in: mcpTokens.expires_in,
+        token_type: mcpTokens.token_type,
+        scope: mcpTokens.scope,
       });
-
-      const mcpTokens: MCPOAuthTokens = {
-        ...tokens,
-        obtained_at: Date.now(),
-        expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
-      };
 
       /** Now complete the flow with the tokens */
       await flowManager.completeFlow(flowId, this.FLOW_TYPE, mcpTokens);
@@ -694,12 +764,22 @@ export class MCPOAuthHandler {
   /**
    * Processes and logs a token refresh response from an OAuth server.
    * Normalizes the response to MCPOAuthTokens format and logs debug info about refresh token rotation.
+   * Supports optional token_response_mapping for non-standard OAuth responses.
    */
   private static processRefreshResponse(
     tokens: Record<string, unknown>,
     serverName: string,
     source: string,
+    tokenResponseMapping?: TokenResponseMapping,
   ): MCPOAuthTokens {
+    // If we have a mapping, use it to extract tokens from nested response
+    if (tokenResponseMapping) {
+      logger.debug(`[MCPOAuth] Using token response mapping for refresh (${source})`, {
+        serverName,
+      });
+      return mapTokenResponse(tokens, tokenResponseMapping);
+    }
+
     const hasNewRefreshToken = !!tokens.refresh_token;
 
     logger.debug(`[MCPOAuth] Token refresh response (${source})`, {
@@ -856,7 +936,12 @@ export class MCPOAuthHandler {
         }
 
         const tokens = await response.json();
-        return this.processRefreshResponse(tokens, metadata.serverName, 'stored client info');
+        return this.processRefreshResponse(
+          tokens,
+          metadata.serverName,
+          'stored client info',
+          config?.token_response_mapping,
+        );
       }
 
       // Fallback: If we have pre-configured OAuth settings, use them
@@ -937,7 +1022,12 @@ export class MCPOAuthHandler {
         }
 
         const tokens = await response.json();
-        return this.processRefreshResponse(tokens, metadata.serverName, 'pre-configured OAuth');
+        return this.processRefreshResponse(
+          tokens,
+          metadata.serverName,
+          'pre-configured OAuth',
+          config?.token_response_mapping,
+        );
       }
 
       /** For auto-discovered OAuth, we need the server URL */
@@ -989,7 +1079,12 @@ export class MCPOAuthHandler {
       }
 
       const tokens = await response.json();
-      return this.processRefreshResponse(tokens, metadata.serverName, 'auto-discovered OAuth');
+      return this.processRefreshResponse(
+        tokens,
+        metadata.serverName,
+        'auto-discovered OAuth',
+        config?.token_response_mapping,
+      );
     } catch (error) {
       logger.error(`[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`, error);
       throw error;
