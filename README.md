@@ -7,6 +7,7 @@ This fork implements these PRs:
   - implemented upstream!
 - ~~feat: add hide "base" models flag to model spec [#10915](https://github.com/danny-avila/LibreChat/pull/10915)~~
   - rejected, but workaround was provided instead
+- [feat: custom oauth token handling](https://github.com/Muon-Space/LibreChat/pull/10)
 
 This fork implements these custom changes:
 - Removed all workflows
