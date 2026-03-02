@@ -658,6 +658,245 @@ async function getOAuthHeaders(serverName, userId) {
   return serverConfig?.oauth_headers ?? {};
 }
 
+// ============================================================================
+// MCP Proxy API — REST endpoints for external tool calls
+// These endpoints allow external MCP clients (Claude Desktop, Cursor, custom
+// agents, etc.) to call MCP tools through LibreChat, leveraging its OAuth
+// token management for authenticated servers.
+//
+// Authentication: All endpoints require a valid LibreChat JWT token.
+// Obtain one via POST /api/auth/login with email/password, or via the
+// SAML/OpenID flow used by your deployment.
+// ============================================================================
+
+/**
+ * List all MCP servers with connection status and OAuth requirements
+ * @route GET /api/mcp/proxy/servers
+ * @returns {Object} Map of server names to { connectionState, requiresOAuth, toolCount }
+ */
+router.get('/proxy/servers', requireJwtAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { mcpConfig, appConnections, userConnections, oauthServers } = await getMCPSetupData(
+      user.id,
+    );
+
+    const servers = {};
+    for (const [serverName, config] of Object.entries(mcpConfig)) {
+      try {
+        const status = await getServerConnectionStatus(
+          user.id,
+          serverName,
+          config,
+          appConnections,
+          userConnections,
+          oauthServers,
+        );
+
+        const mcpManager = getMCPManager();
+        let toolCount = 0;
+        try {
+          const toolFunctions = await mcpManager.getServerToolFunctions(user.id, serverName);
+          if (toolFunctions) {
+            toolCount = Object.keys(toolFunctions).length;
+          }
+        } catch {
+          // tools not yet discovered
+        }
+
+        servers[serverName] = {
+          connectionState: status.connectionState,
+          requiresOAuth: status.requiresOAuth,
+          toolCount,
+        };
+      } catch (error) {
+        logger.error(`[MCP Proxy] Failed to get status for ${serverName}:`, error);
+        servers[serverName] = {
+          connectionState: 'error',
+          requiresOAuth: oauthServers.has(serverName),
+          toolCount: 0,
+          error: error.message,
+        };
+      }
+    }
+
+    res.json({ servers });
+  } catch (error) {
+    logger.error('[MCP Proxy] Failed to list servers', error);
+    res.status(500).json({ error: 'Failed to list servers' });
+  }
+});
+
+/**
+ * List all available tools across all connected MCP servers
+ * @route GET /api/mcp/proxy/tools
+ * @query {string} [server] - Optional: filter tools by server name
+ * @returns {Object} Map of server names to their tool definitions
+ */
+router.get('/proxy/tools', requireJwtAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { server: filterServer } = req.query;
+    const mcpConfig = await getMCPServersRegistry().getAllServerConfigs(user.id);
+    if (!mcpConfig) {
+      return res.json({ tools: {} });
+    }
+
+    const mcpManager = getMCPManager();
+    const tools = {};
+
+    const serverNames = filterServer
+      ? [filterServer].filter((s) => mcpConfig[s])
+      : Object.keys(mcpConfig);
+
+    for (const serverName of serverNames) {
+      try {
+        const serverTools = await mcpManager.getServerToolFunctions(user.id, serverName);
+        if (!serverTools || Object.keys(serverTools).length === 0) {
+          continue;
+        }
+
+        tools[serverName] = [];
+        for (const [toolKey, toolData] of Object.entries(serverTools)) {
+          if (!toolData.function || !toolKey.includes(Constants.mcp_delimiter)) {
+            continue;
+          }
+          const toolName = toolKey.split(Constants.mcp_delimiter)[0];
+          tools[serverName].push({
+            name: toolName,
+            description: toolData.function.description || '',
+            inputSchema: toolData.function.parameters || {},
+          });
+        }
+      } catch (error) {
+        logger.error(`[MCP Proxy] Error fetching tools for ${serverName}:`, error);
+      }
+    }
+
+    res.json({ tools });
+  } catch (error) {
+    logger.error('[MCP Proxy] Failed to list tools', error);
+    res.status(500).json({ error: 'Failed to list tools' });
+  }
+});
+
+/**
+ * Call a tool on an MCP server
+ * For OAuth-protected servers, the user must have previously completed
+ * the OAuth flow through the LibreChat UI. If not, returns 401 with
+ * oauthRequired flag and instructions.
+ *
+ * @route POST /api/mcp/proxy/tools/call
+ * @body {string} serverName - The MCP server name (e.g., "grafana", "google")
+ * @body {string} toolName - The tool to call (e.g., "search_dashboards")
+ * @body {Object} [arguments] - Tool arguments matching the tool's input schema
+ * @returns {Object} Tool call result
+ */
+router.post('/proxy/tools/call', requireJwtAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { serverName, toolName, arguments: toolArguments } = req.body;
+
+    if (!serverName || typeof serverName !== 'string') {
+      return res.status(400).json({ error: 'serverName is required and must be a string' });
+    }
+    if (!toolName || typeof toolName !== 'string') {
+      return res.status(400).json({ error: 'toolName is required and must be a string' });
+    }
+
+    // Verify server exists
+    const serverConfig = await getMCPServersRegistry().getServerConfig(serverName, user.id);
+    if (!serverConfig) {
+      return res.status(404).json({
+        error: 'server_not_found',
+        message: `MCP server '${serverName}' not found in configuration`,
+      });
+    }
+
+    const flowsCache = getLogStores(CacheKeys.FLOWS);
+    const flowManager = getFlowStateManager(flowsCache);
+    const mcpManager = getMCPManager();
+
+    const result = await mcpManager.callTool({
+      user,
+      serverName,
+      toolName,
+      provider: 'openai',
+      toolArguments: toolArguments || {},
+      flowManager,
+      tokenMethods: {
+        findToken,
+        createToken,
+        updateToken,
+      },
+      oauthStart: async (authURL) => {
+        const oauthError = new Error('OAuth authentication required');
+        oauthError.code = 'OAUTH_REQUIRED';
+        oauthError.authURL = authURL;
+        throw oauthError;
+      },
+      oauthEnd: async () => {},
+    });
+
+    // callTool returns [content, artifact] or formatted result depending on provider
+    // For the proxy API, normalize to a consistent format
+    let responseContent;
+    if (Array.isArray(result)) {
+      responseContent = {
+        content: result[0],
+        artifact: result[1] || null,
+      };
+    } else {
+      responseContent = { content: result };
+    }
+
+    res.json({
+      success: true,
+      serverName,
+      toolName,
+      result: responseContent,
+    });
+  } catch (error) {
+    // Handle OAuth-required errors specifically
+    if (
+      error.code === 'OAUTH_REQUIRED' ||
+      error.message?.includes('OAuth') ||
+      error.message?.includes('authentication required') ||
+      error.message?.includes('401')
+    ) {
+      const { serverName } = req.body;
+      return res.status(401).json({
+        error: 'oauth_required',
+        serverName,
+        message:
+          'OAuth authentication required for this MCP server. ' +
+          'Complete the OAuth flow in the LibreChat UI first, then retry.',
+        oauthInitiateUrl: `/api/mcp/${serverName}/reinitialize`,
+        authURL: error.authURL || null,
+      });
+    }
+
+    logger.error('[MCP Proxy] Tool call failed', error);
+    res.status(500).json({
+      success: false,
+      error: 'tool_call_failed',
+      message: error.message || 'Tool call failed',
+    });
+  }
+});
+
 /**
 MCP Server CRUD Routes (User-Managed MCP Servers)
 */
