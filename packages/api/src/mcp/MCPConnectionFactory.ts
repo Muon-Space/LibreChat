@@ -84,9 +84,13 @@ export class MCPConnectionFactory {
       connection.emit('oauthFailed', new Error('OAuth required during tool discovery'));
     };
 
-    if (this.useOAuth) {
-      connection.on('oauthRequired', oauthHandler);
-    }
+    /**
+     * Always register oauthRequired handler, not just when useOAuth is true.
+     * This ensures that unexpected 401 errors (e.g., "Authorization header is required")
+     * properly emit oauthFailed, allowing connectClient's promise to reject
+     * instead of hanging until timeout.
+     */
+    connection.on('oauthRequired', oauthHandler);
 
     try {
       const connectTimeout = this.connectionTimeout ?? this.serverConfig.initTimeout ?? 30000;
@@ -98,9 +102,7 @@ export class MCPConnectionFactory {
 
       if (await connection.isConnected()) {
         const tools = await connection.fetchTools();
-        if (this.useOAuth) {
-          connection.removeListener('oauthRequired', oauthHandler);
-        }
+        connection.removeListener('oauthRequired', oauthHandler);
         return { tools, connection, oauthRequired: false, oauthUrl: null };
       }
     } catch {
@@ -111,9 +113,7 @@ export class MCPConnectionFactory {
 
     try {
       const tools = await this.attemptUnauthenticatedToolListing();
-      if (this.useOAuth) {
-        connection.removeListener('oauthRequired', oauthHandler);
-      }
+      connection.removeListener('oauthRequired', oauthHandler);
       if (tools && tools.length > 0) {
         logger.info(
           `${this.logPrefix} [Discovery] Successfully discovered ${tools.length} tools without auth`,
@@ -129,9 +129,7 @@ export class MCPConnectionFactory {
       logger.debug(`${this.logPrefix} [Discovery] Unauthenticated tool listing failed:`, listError);
     }
 
-    if (this.useOAuth) {
-      connection.removeListener('oauthRequired', oauthHandler);
-    }
+    connection.removeListener('oauthRequired', oauthHandler);
 
     try {
       await connection.disconnect();

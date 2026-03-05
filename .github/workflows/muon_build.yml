@@ -1,0 +1,108 @@
+name: Docker Images Build on Tag
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # librechat-api on AMD64
+          - target: api-build
+            file: Dockerfile.multi
+            image_name: librechat-api
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          # librechat-api on ARM64 (native)
+          - target: api-build
+            file: Dockerfile.multi
+            image_name: librechat-api
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          # librechat on AMD64
+          - target: node
+            file: Dockerfile
+            image_name: librechat
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          # librechat on ARM64 (native)
+          - target: node
+            file: Dockerfile
+            image_name: librechat
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      # Create a unique tag for this platform build
+      - name: Set platform tag
+        id: platform
+        run: |
+          PLATFORM_TAG=$(echo "${{ matrix.platform }}" | tr '/' '-')
+          echo "tag=${PLATFORM_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-${{ steps.platform.outputs.tag }}
+          platforms: ${{ matrix.platform }}
+          target: ${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.image_name }}-${{ steps.platform.outputs.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}-${{ steps.platform.outputs.tag }}
+          provenance: false
+
+  # Create multi-arch manifests after all platform builds complete
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image_name:
+          - librechat-api
+          - librechat
+
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push manifest for version tag
+        run: |
+          docker manifest create \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }} \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}
+
+      - name: Create and push manifest for latest tag
+        run: |
+          docker manifest create \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.ref_name }}-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest
