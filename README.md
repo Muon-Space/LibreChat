@@ -9,8 +9,6 @@ This fork implements these PRs:
   - rejected, but workaround was provided instead
 - feat: implement tool approval checks for agent tool calls [#12152](https://github.com/danny-avila/LibreChat/pull/12152)
   - pending review upstream
-- Feat: support data retention for normal chats [#10532](https://github.com/danny-avila/LibreChat/pull/10532)
-  - pending review upstream
 
 This fork implements these custom changes:
 - Removed all workflows

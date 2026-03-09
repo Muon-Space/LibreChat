@@ -2,7 +2,6 @@ const { logger } = require('@librechat/data-schemas');
 const { createTempChatExpirationDate } = require('@librechat/api');
 const { getMessages, deleteMessages } = require('./Message');
 const { Conversation } = require('~/db/models');
-const { RetentionMode } = require('librechat-data-provider');
 
 /**
  * Searches for a conversation by conversationId and returns a lean document with only conversationId and user.
@@ -101,15 +100,6 @@ module.exports = {
       }
 
       if (req?.body?.isTemporary) {
-        update.isTemporary = true;
-      } else {
-        update.isTemporary = false;
-      }
-
-      if (
-        req?.body?.isTemporary ||
-        req?.config?.interfaceConfig.retentionMode === RetentionMode.ALL
-      ) {
         try {
           const appConfig = req.config;
           update.expiredAt = createTempChatExpirationDate(appConfig?.interfaceConfig);
@@ -193,9 +183,7 @@ module.exports = {
       filters.push({ tags: { $in: tags } });
     }
 
-    filters.push({
-      $or: [{ isTemporary: false }, { expiredAt: { $exists: false } }, { expiredAt: null }],
-    });
+    filters.push({ $or: [{ expiredAt: null }, { expiredAt: { $exists: false } }] });
 
     if (search) {
       try {
@@ -295,7 +283,7 @@ module.exports = {
       const results = await Conversation.find({
         user,
         conversationId: { $in: conversationIds },
-        $or: [{ isTemporary: false }, { expiredAt: { $exists: false } }, { expiredAt: null }],
+        $or: [{ expiredAt: { $exists: false } }, { expiredAt: null }],
       }).lean();
 
       results.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));

@@ -61,10 +61,7 @@ export default function ChatRoute() {
   const endpointsQuery = useGetEndpointsQuery({ enabled: isAuthenticated });
   const assistantListMap = useAssistantListMap();
 
-  const isTemporaryChat =
-    conversation &&
-    (conversation.isTemporary ||
-      (conversation.isTemporary === undefined && conversation.expiredAt != null));
+  const isTemporaryChat = conversation && conversation.expiredAt ? true : false;
 
   useEffect(() => {
     if (conversationId === Constants.NEW_CONVO) {
