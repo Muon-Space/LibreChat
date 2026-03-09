@@ -7,6 +7,8 @@ This fork implements these PRs:
   - implemented upstream!
 - ~~feat: add hide "base" models flag to model spec [#10915](https://github.com/danny-avila/LibreChat/pull/10915)~~
   - rejected, but workaround was provided instead
+- feat: implement tool approval checks for agent tool calls [#12152](https://github.com/danny-avila/LibreChat/pull/12152)
+  - pending review upstream
 
 This fork implements these custom changes:
 - Removed all workflows
