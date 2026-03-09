@@ -30,12 +30,33 @@ db.sharedlinks.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
 
 const retentionMs = 90 * 24 * 60 * 60 * 1000;
 const collections = ["conversations", "messages", "files", "toolcalls", "sharedlinks"];
+const batchSize = 1000;
 
 for (const name of collections) {
-  const result = db.getCollection(name).updateMany(
+  const coll = db.getCollection(name);
+  let ops = [];
+  let count = 0;
+  coll.find(
     { $or: [{ expiredAt: null }, { expiredAt: { $exists: false } }] },
-    [{ $set: { expiredAt: { $add: ["$createdAt", retentionMs] } } }]
-  );
-  print(`${name}: ${result.modifiedCount} updated`);
+    { _id: 1, createdAt: 1 }
+  ).forEach(function(doc) {
+    ops.push({
+      updateOne: {
+        filter: { _id: doc._id },
+        update: { $set: { expiredAt: new Date(doc.createdAt.getTime() + retentionMs) } }
+      }
+    });
+    if (ops.length >= batchSize) {
+      coll.bulkWrite(ops);
+      count += ops.length;
+      print(name + ": " + count + " so far...");
+      ops = [];
+    }
+  });
+  if (ops.length > 0) {
+    coll.bulkWrite(ops);
+    count += ops.length;
+  }
+  print(name + ": " + count + " updated");
 }
 ```
