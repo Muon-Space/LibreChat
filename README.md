@@ -11,9 +11,31 @@ This fork implements these PRs:
   - pending review upstream
 - Feat: support data retention for normal chats [#10532](https://github.com/danny-avila/LibreChat/pull/10532)
   - pending review upstream
+- feat: updating expiration for multiple different collections [#15](https://github.com/Muon-Space/LibreChat/pull/15)
+  - internal change to add retention policy on each impacted collection
 
 This fork implements these custom changes:
 - Removed all workflows
   - added just one workflow to build/push the image
     - this is built with more optimization for build speeds
 - Updated README.md
+
+We ran these mongosh commands:
+```js
+db.conversations.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
+db.messages.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
+db.files.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
+db.toolcalls.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
+db.sharedlinks.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 })
+
+const retentionMs = 90 * 24 * 60 * 60 * 1000;
+const collections = ["conversations", "messages", "files", "toolcalls", "sharedlinks"];
+
+for (const name of collections) {
+  const result = db.getCollection(name).updateMany(
+    { $or: [{ expiredAt: null }, { expiredAt: { $exists: false } }] },
+    [{ $set: { expiredAt: { $add: ["$createdAt", retentionMs] } } }]
+  );
+  print(`${name}: ${result.modifiedCount} updated`);
+}
+```
