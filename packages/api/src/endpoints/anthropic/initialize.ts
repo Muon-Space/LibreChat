@@ -1,8 +1,26 @@
 import { EModelEndpoint, AuthKeys } from 'librechat-data-provider';
+import type { TToolApproval } from 'librechat-data-provider';
 import type { BaseInitializeParams, InitializeResultBase, AnthropicConfigOptions } from '~/types';
 import { checkUserKeyExpiry, isEnabled } from '~/utils';
 import { loadAnthropicVertexCredentials, getVertexCredentialOptions } from './vertex';
 import { getLLMConfig } from './llm';
+
+function shouldDisableNativeWebSearch(toolApproval: TToolApproval | undefined): boolean {
+  if (!toolApproval) {
+    return false;
+  }
+  const { required, excluded } = toolApproval;
+  if (excluded?.includes('web_search')) {
+    return false;
+  }
+  if (required === true) {
+    return true;
+  }
+  if (Array.isArray(required) && required.includes('web_search')) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Initializes Anthropic endpoint configuration.
@@ -76,6 +94,14 @@ export async function initializeAnthropic({
     // Pass full Vertex AI config including model mappings
     ...(vertexConfig && { vertexConfig }),
   };
+
+  const toolApproval = appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval;
+  if (shouldDisableNativeWebSearch(toolApproval)) {
+    clientOptions.dropParams = clientOptions.dropParams ?? [];
+    if (!clientOptions.dropParams.includes('web_search')) {
+      clientOptions.dropParams.push('web_search');
+    }
+  }
 
   const anthropicConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic];
   const allConfig = appConfig?.endpoints?.all;
