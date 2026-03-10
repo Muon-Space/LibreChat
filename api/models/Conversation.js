@@ -194,7 +194,7 @@ module.exports = {
     }
 
     filters.push({
-      $or: [{ isTemporary: false }, { expiredAt: { $exists: false } }, { expiredAt: null }],
+      $or: [{ isTemporary: false }, { isTemporary: { $exists: false } }],
     });
 
     if (search) {
@@ -295,7 +295,7 @@ module.exports = {
       const results = await Conversation.find({
         user,
         conversationId: { $in: conversationIds },
-        $or: [{ isTemporary: false }, { expiredAt: { $exists: false } }, { expiredAt: null }],
+        $or: [{ isTemporary: false }, { isTemporary: { $exists: false } }],
       }).lean();
 
       results.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
