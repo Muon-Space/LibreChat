@@ -10,6 +10,7 @@ export interface IToolCallData extends Document {
   attachments?: TAttachment[];
   blockIndex?: number;
   partIndex?: number;
+  expiredAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -45,10 +46,14 @@ const toolCallSchema: Schema<IToolCallData> = new Schema(
     partIndex: {
       type: Number,
     },
+    expiredAt: {
+      type: Date,
+    },
   },
   { timestamps: true },
 );
 
+toolCallSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 toolCallSchema.index({ messageId: 1, user: 1 });
 toolCallSchema.index({ conversationId: 1, user: 1 });
 
