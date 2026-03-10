@@ -46,4 +46,9 @@ for (const name of collections) {
   }
   print(name + ": " + count + " updated");
 }
+
+db.conversations.updateMany(
+  { isTemporary: { $exists: false } },
+  { $set: { isTemporary: false } }
+)
 ```
