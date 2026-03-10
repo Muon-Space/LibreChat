@@ -8,6 +8,7 @@ const {
   FileContext,
   FileSources,
   imageExtRegex,
+  RetentionMode,
   EModelEndpoint,
   EToolResources,
   mergeFileConfig,
@@ -20,7 +21,7 @@ const {
 } = require('librechat-data-provider');
 const { EnvVar } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
-const { sanitizeFilename, parseText, processAudioFile } = require('@librechat/api');
+const { sanitizeFilename, parseText, processAudioFile, createTempChatExpirationDate } = require('@librechat/api');
 const {
   convertImage,
   resizeAndConvert,
@@ -37,6 +38,26 @@ const { LB_QueueAsyncCall } = require('~/server/utils/queue');
 const { getStrategyFunctions } = require('./strategies');
 const { determineFileType } = require('~/server/utils');
 const { STTService } = require('./Audio/STTService');
+
+/**
+ * Returns `{ expiredAt }` when the request indicates data retention applies, otherwise `{}`.
+ * Spread into file data objects before calling createFile.
+ * @param {ServerRequest} req
+ * @returns {{ expiredAt?: Date }}
+ */
+function getRetentionExpiry(req) {
+  if (
+    req?.body?.isTemporary ||
+    req?.config?.interfaceConfig?.retentionMode === RetentionMode.ALL
+  ) {
+    try {
+      return { expiredAt: createTempChatExpirationDate(req.config?.interfaceConfig) };
+    } catch (_err) {
+      return {};
+    }
+  }
+  return {};
+}
 
 /**
  * Creates a modular file upload wrapper that ensures filename sanitization
@@ -308,6 +329,7 @@ const processImageFile = async ({ req, res, metadata, returnFile = false }) => {
       context: FileContext.message_attachment,
       source,
       type: `image/${appConfig.imageOutputType}`,
+      ...getRetentionExpiry(req),
       width,
       height,
     },
@@ -360,6 +382,7 @@ const uploadImageBuffer = async ({ req, context, metadata = {}, resize = true })
       source,
       type,
       width,
+      ...getRetentionExpiry(req),
       height,
     },
     true,
@@ -446,6 +469,7 @@ const processFileUpload = async ({ req, res, metadata }) => {
       context: isAssistantUpload ? FileContext.assistants : FileContext.message_attachment,
       model: isAssistantUpload ? req.body.model : undefined,
       type: file.mimetype,
+      ...getRetentionExpiry(req),
       embedded,
       source,
       height,
@@ -542,6 +566,7 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
         filename: file.originalname,
         model: messageAttachment ? undefined : req.body.model,
         context: messageAttachment ? FileContext.message_attachment : FileContext.agents,
+        ...getRetentionExpiry(req),
       });
 
       if (!messageAttachment && tool_resource) {
@@ -718,6 +743,7 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
     source,
     height,
     width,
+    ...getRetentionExpiry(req),
   });
 
   const result = await createFile(fileInfo, true);
@@ -763,6 +789,7 @@ const processOpenAIFile = async ({
     source,
     model: openai.req.body.model,
     filename: originalName ?? file_id,
+    ...getRetentionExpiry(openai.req),
   };
 
   if (saveFile) {
@@ -806,6 +833,7 @@ const processOpenAIImageOutput = async ({ req, buffer, file_id, filename, fileEx
     context: FileContext.assistants_output,
     file_id,
     filename,
+    ...getRetentionExpiry(req),
   };
   createFile(file, true);
   return file;
@@ -962,6 +990,7 @@ async function saveBase64Image(
       user: req.user.id,
       bytes: image.bytes,
       width: image.width,
+      ...getRetentionExpiry(req),
       height: image.height,
     },
     true,
@@ -1048,6 +1077,7 @@ function filterFile({ req, image, isAvatar }) {
 
 module.exports = {
   filterFile,
+  getRetentionExpiry,
   processFileURL,
   saveBase64Image,
   processImageFile,
