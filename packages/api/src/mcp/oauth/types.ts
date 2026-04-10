@@ -93,6 +93,8 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   oauthHeaders?: Record<string, string>;
   /** True when the flow reused a stored client registration from a prior successful OAuth flow */
   reusedStoredClient?: boolean;
+  /** True when this flow is an auto-retry after clearing a stale client registration */
+  retryAttempt?: boolean;
 }
 
 export interface MCPOAuthTokens extends OAuthTokens {

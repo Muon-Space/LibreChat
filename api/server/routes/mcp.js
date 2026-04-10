@@ -162,6 +162,62 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
             const hasCsrf = validateOAuthCsrf(req, res, flowId, OAUTH_CSRF_COOKIE_PATH);
             const hasSession = !hasCsrf && validateOAuthSession(req, flowUserId);
             if (hasCsrf || hasSession) {
+              const errorStr = String(oauthError).toLowerCase();
+              const isClientRejection =
+                errorStr.includes('invalid_client') ||
+                errorStr.includes('unauthorized_client') ||
+                errorStr.includes('client not found') ||
+                errorStr.includes('unknown client');
+
+              const flowState = await MCPOAuthHandler.getFlowState(flowId, flowManager);
+
+              if (isClientRejection && flowState?.reusedStoredClient && !flowState?.retryAttempt) {
+                logger.info(
+                  '[MCP OAuth] Client rejected, clearing stale registration and retrying',
+                  { flowId, serverName, error: oauthError },
+                );
+
+                await MCPTokenStorage.deleteClientRegistration({
+                  userId: flowUserId,
+                  serverName,
+                  deleteTokens: db.deleteTokens,
+                });
+
+                const oauthHeaders =
+                  flowState.oauthHeaders ?? (await getOAuthHeaders(serverName, flowUserId));
+                const {
+                  authorizationUrl,
+                  flowId: newFlowId,
+                  flowMetadata,
+                } = await MCPOAuthHandler.initiateOAuthFlow(
+                  serverName,
+                  flowState.serverUrl,
+                  flowUserId,
+                  oauthHeaders,
+                );
+
+                const oldState = flowState.state;
+                await flowManager.deleteFlow(flowId, 'mcp_oauth');
+                if (oldState) {
+                  await MCPOAuthHandler.deleteStateMapping(oldState, flowManager);
+                }
+
+                const metadataWithRetry = {
+                  ...flowMetadata,
+                  authorizationUrl,
+                  retryAttempt: true,
+                };
+                await flowManager.initFlow(newFlowId, 'mcp_oauth', metadataWithRetry);
+                await MCPOAuthHandler.storeStateMapping(
+                  flowMetadata.state,
+                  newFlowId,
+                  flowManager,
+                );
+
+                setOAuthCsrfCookie(res, newFlowId, OAUTH_CSRF_COOKIE_PATH);
+                return res.redirect(authorizationUrl);
+              }
+
               await flowManager.failFlow(flowId, 'mcp_oauth', String(oauthError));
               logger.debug('[MCP OAuth] Marked flow as FAILED with OAuth error', {
                 flowId,
