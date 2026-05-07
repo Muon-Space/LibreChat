@@ -455,6 +455,15 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.ocr,
 ];
 
+export const toolApprovalSchema = z
+  .object({
+    required: z.union([z.boolean(), z.array(z.string())]).optional(),
+    excluded: z.array(z.string()).optional(),
+  })
+  .optional();
+
+export type TToolApproval = z.infer<typeof toolApprovalSchema>;
+
 const LOCAL_REMOTE_OIDC_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 export function isRemoteOidcUrlAllowed(value: string): boolean {
@@ -526,6 +535,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .array(z.nativeEnum(AgentCapabilities))
         .optional()
         .default(defaultAgentCapabilities),
+      toolApproval: toolApprovalSchema,
       remoteApi: remoteApiSchema.optional(),
     }),
   )
