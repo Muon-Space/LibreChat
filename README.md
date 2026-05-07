@@ -1,10 +1,10 @@
 # Fork with minimal changes
 
 This fork implements these PRs:
-- chore: muon-specific workflows, README [#16](https://github.com/Muon-Space/LibreChat/pull/16)
-- feat: implement tool approval checks for agent tool calls [#17](https://github.com/Muon-Space/LibreChat/pull/17)
+- chore: muon-specific workflows, README [#27](https://github.com/Muon-Space/LibreChat/pull/27)
+- feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)
   - pending review upstream
-- feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#18](https://github.com/Muon-Space/LibreChat/pull/18)
+- feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)
   - pending review upstream
 
 We ran these mongosh commands:
