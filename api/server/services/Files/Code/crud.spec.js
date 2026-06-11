@@ -49,18 +49,24 @@ jest.mock('@librechat/api', () => {
       return `?${params.toString()}`;
     }),
     logAxiosError: jest.fn(({ message }) => message),
+    getCodeApiAuthHeaders: jest.fn(async () => ({})),
     createAxiosInstance: jest.fn(() => mockAxios),
     codeServerHttpAgent: new http.Agent({ keepAlive: false }),
     codeServerHttpsAgent: new https.Agent({ keepAlive: false }),
   };
 });
 
-const { codeServerHttpAgent, codeServerHttpsAgent } = require('@librechat/api');
-const { getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./crud');
+const {
+  codeServerHttpAgent,
+  codeServerHttpsAgent,
+  getCodeApiAuthHeaders,
+} = require('@librechat/api');
+const { deleteCodeEnvFile, getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./crud');
 
 describe('Code CRUD', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    getCodeApiAuthHeaders.mockResolvedValue({});
   });
 
   describe('getCodeOutputDownloadStream', () => {
@@ -101,6 +107,18 @@ describe('Code CRUD', () => {
       expect(callConfig.timeout).toBe(15000);
     });
 
+    it('forwards Code API auth headers when a request is provided', async () => {
+      const req = { user: { id: 'user-123' } };
+      getCodeApiAuthHeaders.mockResolvedValue({ Authorization: 'Bearer codeapi-token' });
+      mockAxios.mockResolvedValue({ data: Readable.from(['chunk']) });
+
+      await getCodeOutputDownloadStream('session-1/file-1', userIdentity, req);
+
+      const callConfig = mockAxios.mock.calls[0][0];
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req);
+      expect(callConfig.headers.Authorization).toBe('Bearer codeapi-token');
+    });
+
     it('forwards skill identity (kind/id/version) when re-downloading a primed skill file', async () => {
       mockAxios.mockResolvedValue({ data: Readable.from(['chunk']) });
 
@@ -134,6 +152,94 @@ describe('Code CRUD', () => {
       mockAxios.mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(getCodeOutputDownloadStream('s/f', userIdentity)).rejects.toThrow();
+    });
+  });
+
+  describe('deleteCodeEnvFile', () => {
+    const req = { user: { id: 'user-123' } };
+    const file = {
+      metadata: {
+        codeEnvRef: {
+          kind: 'agent',
+          id: 'agent-abc',
+          storage_session_id: 'session-1',
+          file_id: 'file-1',
+        },
+      },
+    };
+
+    it('deletes the code environment object with resource identity and auth headers', async () => {
+      getCodeApiAuthHeaders.mockResolvedValue({ Authorization: 'Bearer codeapi-token' });
+      mockAxios.mockResolvedValue({ status: 204 });
+
+      await deleteCodeEnvFile(req, file);
+
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req);
+      expect(mockAxios).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'delete',
+          url: 'https://code-api.example.com/sessions/session-1/objects/file-1?kind=agent&id=agent-abc',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer codeapi-token',
+            'User-Agent': 'LibreChat/1.0',
+          }),
+          httpAgent: codeServerHttpAgent,
+          httpsAgent: codeServerHttpsAgent,
+          timeout: 15000,
+        }),
+      );
+    });
+
+    it.each([404, 405])(
+      'falls back to the legacy code environment delete route after a %s',
+      async (status) => {
+        mockAxios
+          .mockRejectedValueOnce(
+            Object.assign(new Error('missing route'), { response: { status } }),
+          )
+          .mockResolvedValueOnce({ status: 204 });
+
+        await deleteCodeEnvFile(req, file);
+
+        expect(mockAxios).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            method: 'delete',
+            url: 'https://code-api.example.com/sessions/session-1/objects/file-1?kind=agent&id=agent-abc',
+          }),
+        );
+        expect(mockAxios).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({
+            method: 'delete',
+            url: 'https://code-api.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
+          }),
+        );
+      },
+    );
+
+    it('skips files without a code environment ref', async () => {
+      await deleteCodeEnvFile(req, {});
+
+      expect(mockAxios).not.toHaveBeenCalled();
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+    });
+
+    it('treats missing code environment objects as already deleted', async () => {
+      mockAxios
+        .mockRejectedValueOnce(Object.assign(new Error('missing'), { response: { status: 404 } }))
+        .mockRejectedValueOnce(Object.assign(new Error('missing'), { response: { status: 404 } }));
+
+      await expect(deleteCodeEnvFile(req, file)).resolves.toBeUndefined();
+      expect(mockAxios).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws when code environment deletion fails', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('unavailable'), { response: { status: 500 } }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('unavailable');
     });
   });
 
@@ -192,6 +298,23 @@ describe('Code CRUD', () => {
 
       const result = await uploadCodeEnvFile(baseUploadParams);
       expect(result).toEqual({ storage_session_id: 'sess-1', file_id: 'fid-1' });
+    });
+
+    it('forwards Code API auth headers on upload requests', async () => {
+      getCodeApiAuthHeaders.mockResolvedValue({ Authorization: 'Bearer codeapi-token' });
+      mockAxios.post.mockResolvedValue({
+        data: {
+          message: 'success',
+          storage_session_id: 'sess-1',
+          files: [{ fileId: 'fid-1', filename: 'data.csv' }],
+        },
+      });
+
+      await uploadCodeEnvFile(baseUploadParams);
+
+      const callConfig = mockAxios.post.mock.calls[0][2];
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(baseUploadParams.req);
+      expect(callConfig.headers.Authorization).toBe('Bearer codeapi-token');
     });
 
     /* Phase C / option α (codeapi #1455): the upload wire carries the

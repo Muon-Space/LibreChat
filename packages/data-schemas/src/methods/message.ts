@@ -1,9 +1,10 @@
-import type { DeleteResult, FilterQuery, Model } from 'mongoose';
 import { RetentionMode } from 'librechat-data-provider';
-import logger from '~/config/winston';
-import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
-import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import type { DeleteResult, FilterQuery, Model } from 'mongoose';
 import type { AppConfig, IMessage } from '~/types';
+import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { createFallbackRetentionDate } from '~/utils/retention';
+import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -78,9 +79,9 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
 
     const conversationId = params.conversationId as string | undefined;
     if (!conversationId || !UUID_REGEX.test(conversationId)) {
-      logger.warn(`Invalid conversation ID: ${conversationId}`);
-      logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
-      logger.info(`---Invalid conversation ID Params: ${JSON.stringify(params, null, 2)}`);
+      logger.warn(
+        `Invalid conversation ID: ${conversationId} (context: ${metadata?.context ?? 'n/a'})`,
+      );
       return;
     }
 
@@ -92,15 +93,28 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         messageId: params.newMessageId || params.messageId,
       };
 
-      if (isTemporary || interfaceConfig?.retentionMode === RetentionMode.ALL) {
+      if (interfaceConfig?.retentionMode === RetentionMode.ALL) {
+        if (typeof isTemporary === 'boolean') {
+          update.isTemporary = isTemporary;
+        }
         try {
           update.expiredAt = createTempChatExpirationDate(interfaceConfig);
         } catch (err) {
           logger.error('Error creating temporary chat expiration date:', err);
           logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
-          update.expiredAt = null;
+          update.expiredAt = createFallbackRetentionDate();
         }
-      } else {
+      } else if (isTemporary === true) {
+        update.isTemporary = true;
+        try {
+          update.expiredAt = createTempChatExpirationDate(interfaceConfig);
+        } catch (err) {
+          logger.error('Error creating temporary chat expiration date:', err);
+          logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
+          update.expiredAt = createFallbackRetentionDate();
+        }
+      } else if (isTemporary === false) {
+        update.isTemporary = false;
         update.expiredAt = null;
       }
 
@@ -116,6 +130,19 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         update,
         { upsert: true, new: true },
       );
+
+      if (
+        interfaceConfig?.retentionMode === RetentionMode.ALL &&
+        typeof isTemporary !== 'boolean' &&
+        (message.isTemporary == null ||
+          (message.isTemporary === false && message.$isDefault('isTemporary')))
+      ) {
+        await Message.updateOne(
+          { _id: message._id, isTemporary: { $ne: false } },
+          { $set: { isTemporary: false } },
+        );
+        message.isTemporary = false;
+      }
 
       return message.toObject();
     } catch (err: unknown) {
@@ -258,6 +285,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         isCreatedByUser: updatedMessage.isCreatedByUser,
         tokenCount: updatedMessage.tokenCount,
         feedback: updatedMessage.feedback,
+        endpoint: updatedMessage.endpoint,
       };
     } catch (err) {
       logger.error('Error updating message:', err);

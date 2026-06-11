@@ -5,3 +5,5 @@ export * from './refresh';
 export * from './agent';
 export * from './password';
 export * from './invite';
+export * from './codeapi';
+export * from './openidRoleSync';

@@ -226,7 +226,7 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
       onClick: handleSkillsToggle,
       hideOnClick: false,
       render: (props) => (
-        <div {...props}>
+        <div {...props} data-testid="tools-menu-skills">
           <div className="flex items-center gap-2">
             <ScrollText className="icon-md" aria-hidden="true" />
             <span>{localize('com_ui_skills')}</span>
@@ -261,7 +261,7 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
         <div {...props}>
           <div className="flex items-center gap-2">
             <TerminalSquareIcon className="icon-md" aria-hidden="true" />
-            <span>{localize('com_assistants_code_interpreter')}</span>
+            <span>{localize('com_ui_run_code')}</span>
           </div>
           <div className="flex items-center gap-1">
             <button

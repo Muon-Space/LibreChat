@@ -1,7 +1,7 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { ChevronDown, Users } from 'lucide-react';
-import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type {
   TAttachment,
   TMessageContentParts,
@@ -9,15 +9,17 @@ import type {
   FunctionToolCall,
 } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
-import { useLocalize, useExpandCollapse } from '~/hooks';
+import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import { useMCPIconMap } from '~/hooks/MCP';
 import { AttachmentGroup } from './Parts';
 import store from '~/store';
+import { isBashProgrammaticToolCall } from './routing';
 
 interface ToolMeta {
   name: string;
+  iconName: string;
   hasOutput: boolean;
 }
 
@@ -39,21 +41,31 @@ function getToolMeta(part: TMessageContentParts): ToolMeta | null {
      *  so the group header flips from "Running N agents" to "Ran N
      *  agents" on completion even when the child returned no text. */
     const completed = !!tc.output || tc.progress === 1;
-    return { name: tc.name ?? '', hasOutput: completed };
+    const name = tc.name ?? '';
+    const iconName = isBashProgrammaticToolCall(name, tc.args) ? Tools.bash_tool : name;
+    return { name, iconName, hasOutput: completed };
   }
 
   if (toolCall.type === ToolCallTypes.CODE_INTERPRETER) {
     const ci = (toolCall as { code_interpreter?: { outputs?: unknown[] } }).code_interpreter;
-    return { name: 'code_interpreter', hasOutput: (ci?.outputs?.length ?? 0) > 0 };
+    return {
+      name: 'code_interpreter',
+      iconName: 'code_interpreter',
+      hasOutput: (ci?.outputs?.length ?? 0) > 0,
+    };
   }
 
   if (toolCall.type === ToolCallTypes.RETRIEVAL || toolCall.type === ToolCallTypes.FILE_SEARCH) {
-    return { name: 'file_search', hasOutput: !!(toolCall as { output?: string }).output };
+    return {
+      name: 'file_search',
+      iconName: 'file_search',
+      hasOutput: !!(toolCall as { output?: string }).output,
+    };
   }
 
   if (toolCall.type === ToolCallTypes.FUNCTION && ToolCallTypes.FUNCTION in toolCall) {
     const fn = (toolCall as FunctionToolCall).function;
-    return { name: fn.name, hasOutput: !!fn.output };
+    return { name: fn.name, iconName: fn.name, hasOutput: !!fn.output };
   }
 
   return null;
@@ -63,10 +75,22 @@ interface ToolCallGroupProps {
   parts: PartWithIndex[];
   isSubmitting: boolean;
   isLast: boolean;
-  renderPart: (part: TMessageContentParts, idx: number, isLastPart: boolean) => React.ReactNode;
+  renderPart: (
+    part: TMessageContentParts,
+    idx: number,
+    isLastPart: boolean,
+    onToolExpand?: () => void,
+  ) => React.ReactNode;
   lastContentIdx: number;
   groupAttachments?: TAttachment[];
+  initialExpansionState?: ToolCallGroupExpansionState;
+  onExpansionChange?: (state: ToolCallGroupExpansionState) => void;
 }
+
+export type ToolCallGroupExpansionState = {
+  isExpanded: boolean;
+  userOverride: boolean;
+};
 
 export default function ToolCallGroup({
   parts,
@@ -75,9 +99,13 @@ export default function ToolCallGroup({
   renderPart,
   lastContentIdx,
   groupAttachments,
+  initialExpansionState,
+  onExpansionChange,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const cancelLayoutReconcileRef = useRef<(() => void) | null>(null);
   const count = parts.length;
 
   const toolMetadata = useMemo(() => parts.map((p) => getToolMeta(p.part)), [parts]);
@@ -86,6 +114,7 @@ export default function ToolCallGroup({
     [toolMetadata],
   );
   const toolNames = useMemo(() => toolMetadata.map((m) => m?.name ?? ''), [toolMetadata]);
+  const iconToolNames = useMemo(() => toolMetadata.map((m) => m?.iconName ?? ''), [toolMetadata]);
 
   /** Subagent tool calls get their own label verb ("Running/Ran N agents")
    *  since "Used N tools" reads oddly when the "tools" are actually child
@@ -123,9 +152,33 @@ export default function ToolCallGroup({
 
   const autoExpand = useRecoilValue(store.autoExpandTools);
   const autoCollapse = !autoExpand && count >= 2 && allCompleted;
-  const [isExpanded, setIsExpanded] = useState(autoExpand || !autoCollapse);
-  const [userOverride, setUserOverride] = useState(false);
+  const initialState = initialExpansionState?.userOverride === true ? initialExpansionState : null;
+  const [isExpanded, setIsExpanded] = useState(
+    initialState?.isExpanded ?? (autoExpand || !autoCollapse),
+  );
+  const [userOverride, setUserOverride] = useState(initialState != null);
+  const [shouldRenderBody, setShouldRenderBody] = useState(isExpanded);
+  const previousIsExpandedRef = useRef(isExpanded);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+  const notifyLayoutChange = useCallback(() => {
+    cancelLayoutReconcileRef.current?.();
+    cancelLayoutReconcileRef.current = scheduleMessageContentLayoutReconcile(rootRef.current);
+  }, []);
+
+  useEffect(
+    () => () => {
+      cancelLayoutReconcileRef.current?.();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const wasExpanded = previousIsExpandedRef.current;
+    previousIsExpandedRef.current = isExpanded;
+    if (wasExpanded && !isExpanded) {
+      notifyLayoutChange();
+    }
+  }, [isExpanded, notifyLayoutChange]);
 
   useEffect(() => {
     if (autoCollapse && !userOverride) {
@@ -134,9 +187,35 @@ export default function ToolCallGroup({
   }, [autoCollapse, userOverride]);
 
   const handleToggle = useCallback(() => {
+    const nextExpanded = !isExpanded;
     setUserOverride(true);
-    setIsExpanded((prev) => !prev);
-  }, []);
+    if (nextExpanded) {
+      setShouldRenderBody(true);
+    }
+    setIsExpanded(nextExpanded);
+    onExpansionChange?.({ isExpanded: nextExpanded, userOverride: true });
+  }, [isExpanded, onExpansionChange]);
+
+  const handleToolExpand = useCallback(() => {
+    setUserOverride(true);
+    setShouldRenderBody(true);
+    setIsExpanded(true);
+    onExpansionChange?.({ isExpanded: true, userOverride: true });
+  }, [onExpansionChange]);
+
+  const handleTransitionEnd = useCallback(
+    (event: React.TransitionEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+      if (isExpanded) {
+        return;
+      }
+      setShouldRenderBody(false);
+      notifyLayoutChange();
+    },
+    [isExpanded, notifyLayoutChange],
+  );
 
   const getSubagentLabel = () =>
     subagentsDone
@@ -152,13 +231,14 @@ export default function ToolCallGroup({
   );
 
   useEffect(() => {
-    if (hasActiveToolCall) {
+    if (hasActiveToolCall && !userOverride) {
+      setShouldRenderBody(true);
       setIsExpanded(true);
     }
-  }, [hasActiveToolCall]);
+  }, [hasActiveToolCall, userOverride]);
 
   return (
-    <div className="mb-2 mt-1">
+    <div className="mb-2 mt-1" ref={rootRef}>
       <button
         type="button"
         className="inline-flex w-full items-center gap-2 py-1 text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
@@ -182,7 +262,7 @@ export default function ToolCallGroup({
           </div>
         ) : (
           <StackedToolIcons
-            toolNames={toolNames}
+            toolNames={iconToolNames}
             mcpIconMap={mcpIconMap}
             maxIcons={4}
             isAnimating={!allCompleted && isSubmitting}
@@ -203,12 +283,16 @@ export default function ToolCallGroup({
           aria-hidden="true"
         />
       </button>
-      <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
-          <div className="py-0.5 pl-4">
-            {parts.map(({ part, idx }) => renderPart(part, idx, isLast && idx === lastContentIdx))}
+      <div style={expandStyle} onTransitionEnd={handleTransitionEnd} aria-hidden={!isExpanded}>
+        {shouldRenderBody && (
+          <div className="overflow-hidden" ref={expandRef}>
+            <div className="py-0.5 pl-4">
+              {parts.map(({ part, idx }) =>
+                renderPart(part, idx, isLast && idx === lastContentIdx, handleToolExpand),
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {groupAttachments && groupAttachments.length > 0 && (
         <AttachmentGroup attachments={groupAttachments} />

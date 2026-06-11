@@ -7,9 +7,21 @@ import { isEnabled } from '~/utils';
 
 type GoogleThinkingLevel = 'THINKING_LEVEL_UNSPECIFIED' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
 type GoogleThinkingConfig = {
-  includeThoughts: boolean;
+  includeThoughts?: boolean;
   thinkingLevel?: GoogleThinkingLevel;
 };
+
+const GEMINI_3_5_FLASH = 'gemini-3.5-flash';
+const GEMINI_3_5_FLASH_DEFAULT_THINKING_LEVEL: GoogleThinkingLevel = 'MEDIUM';
+const gemini35FlashLegacyParams = [
+  'temperature',
+  'topP',
+  'topK',
+  'top_p',
+  'top_k',
+  'thinkingBudget',
+  'thinking_budget',
+] as const;
 
 const googleThinkingLevels = new Set<GoogleThinkingLevel>([
   'THINKING_LEVEL_UNSPECIFIED',
@@ -19,8 +31,28 @@ const googleThinkingLevels = new Set<GoogleThinkingLevel>([
   'HIGH',
 ]);
 
+const vertexMultiRegionEndpoints = new Map([
+  ['eu', 'aiplatform.eu.rep.googleapis.com'],
+  ['us', 'aiplatform.us.rep.googleapis.com'],
+  ['global', 'aiplatform.googleapis.com'],
+]);
+
+const blockedModelOptionParams = [
+  'apiKey',
+  'baseUrl',
+  'baseURL',
+  'endpoint',
+  'authOptions',
+  'customHeaders',
+  'headers',
+] as const;
+
+type BlockedModelOptionParam = (typeof blockedModelOptionParams)[number];
+type GoogleModelOptions = Partial<t.GoogleParameters> &
+  Partial<Record<BlockedModelOptionParam, unknown>>;
+
 /** Known Google/Vertex AI parameters that map directly to the client config */
-export const knownGoogleParams = new Set([
+export const knownGoogleParams: Set<string> = new Set([
   'model',
   'modelName',
   'temperature',
@@ -42,6 +74,7 @@ export const knownGoogleParams = new Set([
   'streamUsage',
   'apiKey',
   'baseUrl',
+  'endpoint',
   'location',
   'authOptions',
 ]);
@@ -93,6 +126,146 @@ function normalizeGoogleThinkingLevel(value: unknown): GoogleThinkingLevel | und
     return undefined;
   }
   return normalized;
+}
+
+function isGemini35Flash(model: string) {
+  const normalized = model.toLowerCase();
+  const modelId = normalized.split('/').pop() ?? normalized;
+  return modelId === GEMINI_3_5_FLASH || modelId.startsWith(`${GEMINI_3_5_FLASH}-`);
+}
+
+function getVertexMultiRegionEndpoint(location: string): string | undefined {
+  return vertexMultiRegionEndpoints.get(location);
+}
+
+function sanitizeModelOptions(modelOptions: Partial<t.GoogleParameters> | undefined) {
+  const sanitizedOptions: GoogleModelOptions = { ...(modelOptions ?? {}) };
+  blockedModelOptionParams.forEach((param) => {
+    delete sanitizedOptions[param];
+  });
+  return sanitizedOptions;
+}
+
+function applyGemini35FlashOverrides({
+  config,
+  provider,
+  thinking,
+  dropParams,
+}: {
+  config: GoogleClientOptions | VertexAIClientOptions;
+  provider: Providers;
+  thinking: boolean;
+  dropParams?: string[];
+}) {
+  const mutableConfig = config as Record<string, unknown>;
+  const model = mutableConfig.model;
+  if (typeof model !== 'string' || !isGemini35Flash(model)) {
+    return;
+  }
+
+  gemini35FlashLegacyParams.forEach((param) => {
+    delete mutableConfig[param];
+  });
+
+  if (!thinking) {
+    return;
+  }
+
+  const droppedParams = new Set(dropParams ?? []);
+  if (droppedParams.has('thinkingConfig')) {
+    return;
+  }
+
+  const shouldDropIncludeThoughts = droppedParams.has('includeThoughts');
+  const shouldDropThinkingLevel = droppedParams.has('thinkingLevel');
+  const configWithThinking = config as { thinkingConfig?: GoogleThinkingConfig };
+  const thinkingConfig: GoogleThinkingConfig = { ...(configWithThinking.thinkingConfig ?? {}) };
+
+  if (shouldDropIncludeThoughts) {
+    delete thinkingConfig.includeThoughts;
+  }
+
+  if (shouldDropThinkingLevel) {
+    delete thinkingConfig.thinkingLevel;
+  }
+
+  if (!shouldDropIncludeThoughts && thinkingConfig.includeThoughts == null) {
+    thinkingConfig.includeThoughts = true;
+  }
+
+  if (!shouldDropThinkingLevel && !thinkingConfig.thinkingLevel) {
+    thinkingConfig.thinkingLevel = GEMINI_3_5_FLASH_DEFAULT_THINKING_LEVEL;
+  }
+
+  if (Object.keys(thinkingConfig).length > 0) {
+    configWithThinking.thinkingConfig = thinkingConfig;
+  } else {
+    delete configWithThinking.thinkingConfig;
+  }
+
+  if (provider === Providers.VERTEXAI && !shouldDropIncludeThoughts) {
+    (config as VertexAIClientOptions).includeThoughts = true;
+  }
+}
+
+function isAllowedVertexEndpoint(endpoint: string): boolean {
+  if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(endpoint)) {
+    return false;
+  }
+
+  if (endpoint === 'aiplatform.googleapis.com') {
+    return true;
+  }
+
+  if (/^[a-z0-9-]+-aiplatform\.googleapis\.com$/.test(endpoint)) {
+    return true;
+  }
+
+  if (/^aiplatform-[a-z0-9-]+\.p\.googleapis\.com$/.test(endpoint)) {
+    return true;
+  }
+
+  if (/^[a-z0-9-]+-aiplatform-restricted\.p\.googleapis\.com$/.test(endpoint)) {
+    return true;
+  }
+
+  return /^aiplatform\.[a-z0-9-]+\.rep\.googleapis\.com$/.test(endpoint);
+}
+
+function hasAllowedVertexEndpoint(config: Record<string, unknown>): boolean {
+  const endpoint = config.endpoint;
+  if (endpoint === undefined) {
+    return false;
+  }
+
+  if (typeof endpoint !== 'string' || endpoint.trim() !== endpoint || endpoint.length === 0) {
+    delete config.endpoint;
+    return false;
+  }
+
+  const normalizedEndpoint = endpoint.toLowerCase();
+  if (!isAllowedVertexEndpoint(normalizedEndpoint)) {
+    delete config.endpoint;
+    return false;
+  }
+
+  config.endpoint = normalizedEndpoint;
+  return true;
+}
+
+function applyVertexMultiRegionEndpoint(config: VertexAIClientOptions & { endpoint?: string }) {
+  const location = config.location;
+  if (typeof location !== 'string') {
+    return;
+  }
+  const multiRegionEndpoint = getVertexMultiRegionEndpoint(location);
+  if (multiRegionEndpoint) {
+    config.endpoint = multiRegionEndpoint;
+  }
+}
+
+function hasServiceKeyCredentials(serviceKey: Record<string, unknown>): boolean {
+  return Object.keys(serviceKey).length > 0;
 }
 
 export function getSafetySettings(
@@ -147,7 +320,14 @@ export function getGoogleConfig(
   credentials: string | t.GoogleCredentials | undefined,
   options: t.GoogleConfigOptions = {},
   acceptRawApiKey = false,
-) {
+): {
+  /** @type {GoogleAIToolType[]} */
+  tools: GoogleAIToolType[];
+  /** @type {Providers.GOOGLE | Providers.VERTEXAI} */
+  provider: Providers.VERTEXAI | Providers.GOOGLE;
+  /** @type {GoogleClientOptions | VertexAIClientOptions} */
+  llmConfig: VertexAIClientOptions | GoogleClientOptions;
+} {
   let creds: t.GoogleCredentials = {};
   if (acceptRawApiKey && typeof credentials === 'string') {
     creds[AuthKeys.GOOGLE_API_KEY] = credentials;
@@ -168,7 +348,12 @@ export function getGoogleConfig(
     typeof serviceKeyRaw === 'string' ? JSON.parse(serviceKeyRaw) : (serviceKeyRaw ?? {});
 
   const apiKey = creds[AuthKeys.GOOGLE_API_KEY] ?? null;
-  const project_id = !apiKey ? (serviceKey?.project_id ?? null) : null;
+  let project_id = null;
+  if (options.forceVertex === true) {
+    project_id = options.projectId ?? serviceKey?.project_id ?? null;
+  } else if (!apiKey) {
+    project_id = serviceKey?.project_id ?? null;
+  }
 
   const reverseProxyUrl = options.reverseProxyUrl;
   const authHeader = options.authHeader;
@@ -179,11 +364,11 @@ export function getGoogleConfig(
     thinking = googleSettings.thinking.default,
     thinkingBudget = googleSettings.thinkingBudget.default,
     ...modelOptions
-  } = options.modelOptions || {};
+  } = sanitizeModelOptions(options.modelOptions);
 
   let enableWebSearch = web_search;
 
-  const llmConfig: GoogleClientOptions | VertexAIClientOptions = removeNullishValues(
+  const llmConfig = removeNullishValues(
     {
       ...(modelOptions || {}),
       model: modelOptions?.model ?? '',
@@ -194,14 +379,17 @@ export function getGoogleConfig(
       maxOutputTokens: modelOptions?.maxOutputTokens ?? undefined,
     },
     true,
-  );
+  ) as GoogleClientOptions | VertexAIClientOptions;
+  const initialConfig = llmConfig as Record<string, unknown>;
+  let hasCustomVertexEndpoint = hasAllowedVertexEndpoint(initialConfig);
+  let shouldSyncVertexEndpoint = true;
 
   /** Used only for Safety Settings */
   llmConfig.safetySettings = getSafetySettings(llmConfig.model);
 
   let provider;
 
-  if (project_id) {
+  if (options.forceVertex === true || project_id) {
     provider = Providers.VERTEXAI;
   } else {
     provider = Providers.GOOGLE;
@@ -209,11 +397,15 @@ export function getGoogleConfig(
 
   // If we have a GCP project => Vertex AI
   if (provider === Providers.VERTEXAI) {
-    (llmConfig as VertexAIClientOptions).authOptions = {
-      credentials: { ...serviceKey },
-      projectId: project_id,
-    };
-    (llmConfig as VertexAIClientOptions).location = process.env.GOOGLE_LOC || 'us-central1';
+    (llmConfig as VertexAIClientOptions).authOptions = removeNullishValues(
+      {
+        ...(hasServiceKeyCredentials(serviceKey) && { credentials: { ...serviceKey } }),
+        projectId: project_id,
+      },
+      true,
+    );
+    const location = process.env.GOOGLE_LOC || 'us-central1';
+    (llmConfig as VertexAIClientOptions).location = location;
   } else if (apiKey && provider === Providers.GOOGLE) {
     llmConfig.apiKey = apiKey;
   } else {
@@ -225,18 +417,18 @@ export function getGoogleConfig(
   const modelName = (modelOptions?.model ?? '') as string;
 
   /**
-   * Gemini 3+ uses a qualitative `thinkingLevel` ('minimal'|'low'|'medium'|'high')
-   * instead of the numeric `thinkingBudget` used by Gemini 2.5 and earlier.
+   * Gemini 3+ and Gemma 4+ use a qualitative `thinkingLevel` ('minimal'|'low'|'medium'|'high')
+   * instead of the numeric `thinkingBudget` used by earlier models.
    * When `thinking` is enabled (default: true), we always send `thinkingConfig`
-   * with `includeThoughts: true`. The `thinkingBudget` param is ignored for Gemini 3+.
+   * with `includeThoughts: true`. The `thinkingBudget` param is ignored for these models.
    *
    * For Vertex AI, top-level `includeThoughts` is still required because
    * `@librechat/agents/langchain/google-common`'s `formatGenerationConfig` reads it separately
    * from `thinkingConfig` — they serve different purposes in the request pipeline.
    */
-  const isGemini3Plus = /gemini-([3-9]|\d{2,})/i.test(modelName);
+  const supportsThinkingLevel = /gemini-([3-9]|\d{2,})|gemma-([4-9]|\d{2,})/i.test(modelName);
 
-  if (isGemini3Plus && thinking) {
+  if (supportsThinkingLevel && thinking) {
     const thinkingConfig: GoogleThinkingConfig = {
       includeThoughts: true,
     };
@@ -250,7 +442,7 @@ export function getGoogleConfig(
       (llmConfig as { thinkingConfig?: GoogleThinkingConfig }).thinkingConfig = thinkingConfig;
       (llmConfig as VertexAIClientOptions).includeThoughts = true;
     }
-  } else if (!isGemini3Plus) {
+  } else if (!supportsThinkingLevel) {
     const shouldEnableThinking =
       thinking && thinkingBudget != null && (thinkingBudget > 0 || thinkingBudget === -1);
 
@@ -311,6 +503,9 @@ export function getGoogleConfig(
       if (knownGoogleParams.has(key)) {
         /** Route known Google params to llmConfig only if undefined */
         applyDefaultParams(llmConfig as Record<string, unknown>, { [key]: value });
+        if (key === 'endpoint') {
+          hasCustomVertexEndpoint = hasAllowedVertexEndpoint(llmConfig as Record<string, unknown>);
+        }
       }
       /** Leave other params for transform to handle - they might be OpenAI params */
     }
@@ -330,6 +525,9 @@ export function getGoogleConfig(
       if (knownGoogleParams.has(key)) {
         /** Route known Google params to llmConfig */
         (llmConfig as Record<string, unknown>)[key] = value;
+        if (key === 'endpoint') {
+          hasCustomVertexEndpoint = hasAllowedVertexEndpoint(llmConfig as Record<string, unknown>);
+        }
       }
       /** Leave other params for transform to handle - they might be OpenAI params */
     }
@@ -343,10 +541,46 @@ export function getGoogleConfig(
         return;
       }
 
+      if (param === 'endpoint') {
+        shouldSyncVertexEndpoint = false;
+        hasCustomVertexEndpoint = false;
+      }
+
       if (param in llmConfig) {
         delete (llmConfig as Record<string, unknown>)[param];
       }
     });
+  }
+
+  /**
+   * Apply the model-aware `maxOutputTokens` default last, so an explicit value,
+   * `defaultParams`, and `addParams` all take precedence and a `dropParams` entry
+   * is respected. Only fill in when the field is genuinely unset (`undefined`/`null`);
+   * an empty-string value stays stripped per Gemini empty-payload handling. Without
+   * this, current Gemini models would inherit the legacy 8K default instead of their
+   * documented limit.
+   */
+  const maxOutputDropped =
+    Array.isArray(options.dropParams) && options.dropParams.includes('maxOutputTokens');
+  if (
+    !maxOutputDropped &&
+    modelOptions?.maxOutputTokens == null &&
+    (llmConfig as Record<string, unknown>).maxOutputTokens == null
+  ) {
+    const resolvedModel = (llmConfig as { model?: string }).model || modelName;
+    (llmConfig as GoogleClientOptions).maxOutputTokens =
+      googleSettings.maxOutputTokens.reset(resolvedModel);
+  }
+
+  applyGemini35FlashOverrides({
+    config: llmConfig,
+    provider,
+    thinking,
+    dropParams: Array.isArray(options.dropParams) ? options.dropParams : undefined,
+  });
+
+  if (provider === Providers.VERTEXAI && shouldSyncVertexEndpoint && !hasCustomVertexEndpoint) {
+    applyVertexMultiRegionEndpoint(llmConfig as VertexAIClientOptions & { endpoint?: string });
   }
 
   const tools: GoogleAIToolType[] = [];

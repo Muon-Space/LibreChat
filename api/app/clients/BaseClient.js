@@ -707,7 +707,7 @@ class BaseClient {
   async loadHistory(conversationId, parentMessageId = null) {
     logger.debug('[BaseClient] Loading history:', { conversationId, parentMessageId });
 
-    const messages = (await db.getMessages({ conversationId })) ?? [];
+    const messages = (await db.getMessages({ conversationId, user: this.user })) ?? [];
 
     if (messages.length === 0) {
       return [];
@@ -1217,8 +1217,8 @@ class BaseClient {
     const provider = this.options.agent?.provider ?? this.options.endpoint;
     const isBedrock = provider === EModelEndpoint.bedrock;
 
-    if (!this._mergedFileConfig && this.options.req?.config?.fileConfig) {
-      this._mergedFileConfig = mergeFileConfig(this.options.req.config.fileConfig);
+    if (!this._mergedFileConfig) {
+      this._mergedFileConfig = mergeFileConfig(this.options.req?.config?.fileConfig);
       const endpoint = this.options.agent?.endpoint ?? this.options.endpoint;
       this._endpointFileConfig = getEndpointFileConfig({
         fileConfig: this._mergedFileConfig,

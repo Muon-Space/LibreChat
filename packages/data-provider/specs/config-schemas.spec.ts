@@ -3,14 +3,22 @@ import {
   agentsEndpointSchema,
   azureEndpointSchema,
   endpointSchema,
+  RetentionMode,
   configSchema,
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
+  MAX_SUBAGENTS,
 } from '../src/config';
-import { tModelSpecPresetSchema, EModelEndpoint } from '../src/schemas';
+import {
+  tModelSpecPresetSchema,
+  EModelEndpoint,
+  ReasoningParameterFormat,
+  ReasoningResponseKey,
+} from '../src/schemas';
 import { specsConfigSchema } from '../src/models';
 import { FileSources } from '../src/types/files';
 
@@ -305,6 +313,58 @@ describe('endpointSchema addParams validation', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts custom reasoning format config', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: {
+        reasoningFormat: ReasoningParameterFormat.reasoningObject,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningFormat).toBe(
+        ReasoningParameterFormat.reasoningObject,
+      );
+    }
+  });
+
+  it('rejects invalid custom reasoning format config', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: {
+        reasoningFormat: 'provider_magic',
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts custom reasoning response key config', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: {
+        reasoningKey: ReasoningResponseKey.reasoning,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningKey).toBe(ReasoningResponseKey.reasoning);
+    }
+  });
+
+  it('rejects invalid custom reasoning response key config', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: {
+        reasoningKey: 'reasoning_text',
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects non-boolean web_search objects in addParams', () => {
     const result = endpointSchema.safeParse({
       ...validEndpoint,
@@ -374,6 +434,7 @@ describe('agentsEndpointSchema', () => {
         auth: {
           oidc: {
             enabled: true,
+            audience: 'remote-agent-api',
           },
         },
       },
@@ -384,6 +445,7 @@ describe('agentsEndpointSchema', () => {
           oidc: {
             enabled: true,
             issuer: 'my-realm',
+            audience: 'remote-agent-api',
           },
         },
       },
@@ -393,6 +455,21 @@ describe('agentsEndpointSchema', () => {
     expect(invalidIssuer.success).toBe(false);
   });
 
+  it('requires an audience when remote OIDC auth is enabled', () => {
+    const result = agentsEndpointSchema.safeParse({
+      remoteApi: {
+        auth: {
+          oidc: {
+            enabled: true,
+            issuer: 'https://auth.example.com',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('requires HTTPS remote OIDC issuer and JWKS URLs outside localhost', () => {
     const insecureIssuer = agentsEndpointSchema.safeParse({
       remoteApi: {
@@ -400,6 +477,7 @@ describe('agentsEndpointSchema', () => {
           oidc: {
             enabled: true,
             issuer: 'http://auth.example.com',
+            audience: 'remote-agent-api',
           },
         },
       },
@@ -410,6 +488,7 @@ describe('agentsEndpointSchema', () => {
           oidc: {
             enabled: true,
             issuer: 'https://auth.example.com',
+            audience: 'remote-agent-api',
             jwksUri: 'http://auth.example.com/jwks',
           },
         },
@@ -427,6 +506,7 @@ describe('agentsEndpointSchema', () => {
           oidc: {
             enabled: true,
             issuer: 'http://localhost:8080/realms/test',
+            audience: 'remote-agent-api',
             jwksUri: 'http://127.0.0.1:8080/realms/test/protocol/openid-connect/certs',
           },
         },
@@ -443,6 +523,7 @@ describe('agentsEndpointSchema', () => {
           oidc: {
             enabled: true,
             issuer: 'https://auth.example.com',
+            audience: 'remote-agent-api',
             scope: 'remote_agent,admin',
           },
         },
@@ -601,6 +682,294 @@ describe('configSchema fileStrategy', () => {
   });
 });
 
+describe('configSchema skillSync', () => {
+  it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          intervalMinutes: 60,
+          runOnStartup: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              ref: 'main',
+              paths: ['skills', '.'],
+              credentialKey: 'github-skills-prod',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.skillSync?.github?.sources[0]?.paths).toEqual(['skills', '']);
+    expect(result.data?.skillSync?.github?.sources[0]?.skillDiscoveryDepth).toBeUndefined();
+  });
+
+  it('accepts a GitHub skill sync source with an env-backed token and discovery depth', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'mattpocock-skills',
+              owner: 'mattpocock',
+              repo: 'skills',
+              paths: ['skills'],
+              skillDiscoveryDepth: 3,
+              token: '${GITHUB_SKILLS_TOKEN}',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.skillSync?.github?.sources[0]?.token).toBe('${GITHUB_SKILLS_TOKEN}');
+    expect(result.data?.skillSync?.github?.sources[0]?.skillDiscoveryDepth).toBe(3);
+  });
+
+  it('accepts an optional tenantId on a GitHub skill sync source', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+              tenantId: 'tenant-a',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.skillSync?.github?.sources[0]?.tenantId).toBe('tenant-a');
+  });
+
+  it('rejects the reserved system tenant id on a GitHub skill sync source', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+              tenantId: '__SYSTEM__',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects enabled GitHub skill sync without sources', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects GitHub skill sync intervals below five minutes', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          intervalMinutes: 4,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects GitHub skill sync intervals above the Node timer limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          intervalMinutes: SKILL_SYNC_MAX_INTERVAL_MINUTES + 1,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects unsafe GitHub skill sync paths and credential keys', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['../skills'],
+              credentialKey: '../token',
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects GitHub skill sync sources without credentials or with literal tokens', () => {
+    const missingCredential = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+            },
+          ],
+        },
+      },
+    });
+    const literalToken = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              token: 'github_pat_secret',
+            },
+          ],
+        },
+      },
+    });
+    const duplicateCredentialSources = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+              token: '${GITHUB_SKILLS_TOKEN}',
+            },
+          ],
+        },
+      },
+    });
+    expect(missingCredential.success).toBe(false);
+    expect(literalToken.success).toBe(false);
+    expect(duplicateCredentialSources.success).toBe(false);
+  });
+
+  it('rejects GitHub skill sync discovery depths outside the allowed range', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.11',
+      skillSync: {
+        github: {
+          enabled: true,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+              skillDiscoveryDepth: 11,
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects malformed GitHub skill sync refs during config validation', () => {
+    const invalidRefs = [
+      'feature branch',
+      'release:2026',
+      'bad?ref',
+      'bad*ref',
+      '[bad]',
+      '@{upstream}',
+      'main.lock',
+    ];
+
+    for (const ref of invalidRefs) {
+      const result = configSchema.safeParse({
+        version: '1.3.11',
+        skillSync: {
+          github: {
+            enabled: true,
+            sources: [
+              {
+                id: 'librechat-skills',
+                owner: 'LibreChat',
+                repo: 'skills',
+                ref,
+                paths: ['skills'],
+                credentialKey: 'github-skills-prod',
+              },
+            ],
+          },
+        },
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+});
+
 describe('interfaceSchema', () => {
   it('silently strips removed legacy fields', () => {
     const result = interfaceSchema.parse({
@@ -611,6 +980,16 @@ describe('interfaceSchema', () => {
     expect(result).not.toHaveProperty('endpointsMenu');
     expect(result).not.toHaveProperty('sidePanel');
     expect(result.modelSelect).toBe(false);
+  });
+
+  it('accepts retainAgentFiles with all-data retention', () => {
+    const result = interfaceSchema.parse({
+      retentionMode: RetentionMode.ALL,
+      retainAgentFiles: true,
+    });
+
+    expect(result.retentionMode).toBe(RetentionMode.ALL);
+    expect(result.retainAgentFiles).toBe(true);
   });
 });
 
@@ -746,15 +1125,42 @@ describe('specsConfigSchema', () => {
         {
           name: 'spec-1',
           label: 'Spec 1',
+          hideBadgeRow: true,
+          softDefault: true,
           preset: { endpoint: EModelEndpoint.openAI },
+          subagents: { enabled: true, allowSelf: true, agent_ids: ['agent_researcher'] },
         },
       ],
     });
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.list[0].hideBadgeRow).toBe(true);
+      expect(result.data.list[0].softDefault).toBe(true);
+      expect(result.data.list[0].subagents).toEqual({
+        enabled: true,
+        allowSelf: true,
+        agent_ids: ['agent_researcher'],
+      });
+    }
   });
 
   it('still rejects null list', () => {
     const result = specsConfigSchema.safeParse({ list: null });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects model spec subagent ids above the shared cap', () => {
+    const oversized = Array.from({ length: MAX_SUBAGENTS + 1 }, (_, i) => `agent_${i}`);
+    const result = specsConfigSchema.safeParse({
+      list: [
+        {
+          name: 'spec-1',
+          label: 'Spec 1',
+          preset: { endpoint: EModelEndpoint.openAI },
+          subagents: { enabled: true, agent_ids: oversized },
+        },
+      ],
+    });
     expect(result.success).toBe(false);
   });
 });
