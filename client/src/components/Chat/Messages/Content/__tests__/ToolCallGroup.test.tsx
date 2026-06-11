@@ -1,9 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { ContentTypes } from 'librechat-data-provider';
+import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ToolCallGroup from '../ToolCallGroup';
+import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
@@ -22,6 +23,7 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -29,7 +31,9 @@ jest.mock('~/hooks/MCP', () => ({
 }));
 
 jest.mock('../ToolOutput', () => ({
-  StackedToolIcons: () => <span data-testid="stacked-icons" />,
+  StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
+    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
+  ),
   getMCPServerName: () => '',
 }));
 
@@ -40,7 +44,10 @@ jest.mock('lucide-react', () => ({
 
 jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  getToolDisplayLabel: (name: string) => name,
+  getToolDisplayLabel: (name: string) =>
+    ['execute_code', 'bash_tool', 'run_tools_with_code', 'run_tools_with_bash'].includes(name)
+      ? 'Code'
+      : name,
 }));
 
 jest.mock('../Parts', () => ({
@@ -49,13 +56,18 @@ jest.mock('../Parts', () => ({
   ),
 }));
 
-const makePart = (id: string, output = 'done'): TMessageContentParts =>
+const makePart = (
+  id: string,
+  output = 'done',
+  name = 'fetch_image',
+  args: string | Record<string, unknown> = '{}',
+): TMessageContentParts =>
   ({
     type: ContentTypes.TOOL_CALL,
     [ContentTypes.TOOL_CALL]: {
       id,
-      name: 'fetch_image',
-      args: '{}',
+      name,
+      args,
       output,
     },
   }) as unknown as TMessageContentParts;
@@ -85,6 +97,9 @@ const renderGroup = (props: React.ComponentProps<typeof ToolCallGroup>) =>
     </RecoilRoot>,
   );
 
+const mockScheduleMessageContentLayoutReconcile =
+  scheduleMessageContentLayoutReconcile as jest.Mock;
+
 describe('ToolCallGroup image hoisting', () => {
   const parts = [
     { part: makePart('t1'), idx: 0 },
@@ -102,6 +117,10 @@ describe('ToolCallGroup image hoisting', () => {
       </div>
     ),
   } satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  beforeEach(() => {
+    mockScheduleMessageContentLayoutReconcile.mockClear();
+  });
 
   it('renders an AttachmentGroup outside the collapsible container with all attachments', () => {
     renderGroup({
@@ -130,6 +149,70 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByTestId('attachment-group')).not.toBeInTheDocument();
   });
 
+  it('does not reconcile layout for an initially collapsed completed group', () => {
+    renderGroup(baseProps);
+    expect(mockScheduleMessageContentLayoutReconcile).not.toHaveBeenCalled();
+  });
+
+  it('does not render tool bodies for an initially collapsed large completed group', () => {
+    const largeParts = Array.from({ length: 59 }, (_, idx) => ({
+      part: makePart(`t${idx}`),
+      idx,
+    }));
+    const renderPart = jest.fn((_p: TMessageContentParts, idx: number) => (
+      <div data-testid={`inner-${idx}`} key={idx}>
+        {'inner'}
+      </div>
+    ));
+
+    renderGroup({
+      ...baseProps,
+      parts: largeParts,
+      lastContentIdx: largeParts.length - 1,
+      renderPart,
+    });
+
+    expect(screen.getByRole('button', { name: 'Used 59 tools' })).toBeInTheDocument();
+    expect(renderPart).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
+  });
+
+  it('mounts tool bodies when a collapsed group is expanded', () => {
+    renderGroup(baseProps);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Used 2 tools' }));
+
+    expect(screen.getByTestId('inner-0')).toBeInTheDocument();
+    expect(screen.getByTestId('inner-1')).toBeInTheDocument();
+  });
+
+  it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
+    renderGroup(baseProps);
+
+    const button = screen.getByRole('button', { name: 'Used 2 tools' });
+    const collapsible = button.nextElementSibling as HTMLElement;
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.getByTestId('inner-0')).toBeInTheDocument();
+
+    fireEvent.transitionEnd(collapsible);
+
+    expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
+  });
+
+  it('reconciles layout after the group collapses from an expanded state', async () => {
+    renderGroup(baseProps);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Used 2 tools' }));
+    expect(mockScheduleMessageContentLayoutReconcile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Used 2 tools' }));
+
+    await waitFor(() => {
+      expect(mockScheduleMessageContentLayoutReconcile).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('renders the image AttachmentGroup as a sibling of the collapsible panel, not a child', () => {
     const { container } = renderGroup({
       ...baseProps,
@@ -142,5 +225,32 @@ describe('ToolCallGroup image hoisting', () => {
 
     const collapsible = outer.querySelector('[style]');
     expect(collapsible?.contains(attachmentGroup)).toBe(false);
+  });
+
+  it('summarizes mixed bash PTC and bash_tool calls as one Code tool family', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart('t1', 'ptc done', Constants.PROGRAMMATIC_TOOL_CALLING, {
+            code: 'echo via ptc',
+          }),
+          idx: 0,
+        },
+        {
+          part: makePart('t2', 'bash done', Tools.bash_tool, {
+            command: 'echo via bash',
+          }),
+          idx: 1,
+        },
+      ],
+    });
+
+    expect(screen.getByText('— Code')).toBeInTheDocument();
+    expect(screen.queryByText(/Code, bash_tool/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute(
+      'data-tool-names',
+      'bash_tool,bash_tool',
+    );
   });
 });

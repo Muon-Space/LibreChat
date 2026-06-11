@@ -1,16 +1,16 @@
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
-const { checkAccess, loadWebSearchAuth, createTempChatExpirationDate } = require('@librechat/api');
+const { checkAccess, loadWebSearchAuth } = require('@librechat/api');
 const {
   Tools,
   AuthType,
   Permissions,
   ToolCallTypes,
-  RetentionMode,
   PermissionTypes,
 } = require('librechat-data-provider');
 const { getRoleByName, createToolCall, getToolCallsByConvo, getMessage } = require('~/models');
 const { processFileURL, uploadImageBuffer } = require('~/server/services/Files/process');
+const { getRetentionExpiry } = require('~/server/services/Files/retention');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { loadTools } = require('~/app/clients/tools/util');
@@ -168,16 +168,8 @@ const callTool = async (req, res) => {
       conversationId,
       result: content,
       user: req.user.id,
+      ...(await getRetentionExpiry(req)),
     };
-
-    if (req?.body?.isTemporary || appConfig?.interfaceConfig?.retentionMode === RetentionMode.ALL) {
-      try {
-        toolCallData.expiredAt = createTempChatExpirationDate(appConfig?.interfaceConfig);
-      } catch (err) {
-        logger.error('Error creating tool call expiration date:', err);
-        toolCallData.expiredAt = null;
-      }
-    }
 
     if (!artifact || !artifact.files || toolId !== Tools.execute_code) {
       createToolCall(toolCallData).catch((error) => {

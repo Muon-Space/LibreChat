@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   ErrorTypes,
@@ -12,6 +13,23 @@ import type { FetchModelsParams } from '~/endpoints/models';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
 import { isUserProvided } from '~/utils';
 
+/**
+ * Stable fingerprint of a headers object, used to disambiguate the
+ * in-request fetch-coalescing key. Two endpoints that share the same
+ * baseURL+apiKey but configure different headers must NOT share a fetch
+ * promise, otherwise the first endpoint's filtered /models response would
+ * be reused for the other in the same request.
+ */
+function headersFingerprint(headers: Record<string, string> | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) {
+    return '';
+  }
+  const ordered = Object.keys(headers)
+    .sort()
+    .map((k) => [k, headers[k]]);
+  return crypto.createHash('sha256').update(JSON.stringify(ordered)).digest('hex').slice(0, 16);
+}
+
 interface ResolvedEndpoint {
   name: string;
   endpoint: TEndpoint;
@@ -22,7 +40,11 @@ interface ResolvedEndpoint {
 }
 
 export interface LoadConfigModelsDeps {
-  getAppConfig: (params: { role?: string | null; tenantId?: string }) => Promise<AppConfig>;
+  getAppConfig: (params: {
+    role?: string;
+    userId?: string;
+    tenantId?: string;
+  }) => Promise<AppConfig>;
   getUserKeyValues: GetUserKeyValuesFunction;
   fetchModels?: (params: FetchModelsParams) => Promise<string[]>;
 }
@@ -31,10 +53,13 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
   return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
-    const appConfig = await getAppConfig({
-      role: req.user?.role,
-      tenantId: req.user?.tenantId,
-    });
+    const appConfig =
+      req.config ??
+      (await getAppConfig({
+        role: req.user?.role,
+        userId: req.user?.id,
+        tenantId: req.user?.tenantId,
+      }));
     if (!appConfig) {
       return {};
     }
@@ -142,7 +167,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       baseURLIsUserProvided,
     } of resolved) {
       const { models, headers: endpointHeaders } = endpoint;
-      const uniqueKey = `${BASE_URL}__${API_KEY}`;
+      // Include a fingerprint of the configured headers so two admin-trusted
+      // endpoints that happen to share the same baseURL+apiKey but configure
+      // different (potentially user-bound) headers don't reuse each other's
+      // fetched model list within the same request.
+      const uniqueKey = `${BASE_URL}__${API_KEY}__${headersFingerprint(endpointHeaders)}`;
 
       if (models?.fetch && !apiKeyIsUserProvided && !baseURLIsUserProvided) {
         fetchPromisesMap[uniqueKey] =
@@ -177,7 +206,13 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
               baseURL: resolvedBaseURL,
               user: req.user?.id,
               userObject: req.user,
-              headers: endpointHeaders,
+              // Do not forward header overrides when the base URL is
+              // user-supplied: configured templates such as
+              // {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve and be
+              // sent to a destination the user controls, leaking the user's
+              // identity token. Header overrides are only safe for endpoints
+              // whose base URL is admin-trusted.
+              headers: baseURLIsUserProvided ? undefined : endpointHeaders,
               direct: endpoint.directEndpoint,
               userIdQuery: models.userIdQuery,
               skipCache: true,

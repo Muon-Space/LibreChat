@@ -3,9 +3,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { RetentionMode } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { IMessage } from '..';
-import { createMessageMethods } from './message';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createMessageMethods } from './message';
 import { createModels } from '../models';
+import logger from '~/config/winston';
+
+const waitForTimestampTick = () => new Promise((resolve) => setTimeout(resolve, 2));
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -65,6 +68,8 @@ describe('Message Operations', () => {
   };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     // Clear database
     await Message.deleteMany({});
 
@@ -106,6 +111,18 @@ describe('Message Operations', () => {
       mockMessageData.conversationId = 'invalid-id';
       const result = await saveMessage(mockCtx, mockMessageData);
       expect(result).toBeUndefined();
+    });
+
+    it('should not log message params for invalid conversation IDs', async () => {
+      mockMessageData.conversationId = 'invalid-id';
+      mockMessageData.text = 'Sensitive prompt text';
+
+      await saveMessage(mockCtx, mockMessageData, { context: 'message-save-test' });
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Invalid conversation ID: invalid-id (context: message-save-test)',
+      );
+      expect(logger.info).not.toHaveBeenCalled();
     });
   });
 
@@ -166,6 +183,8 @@ describe('Message Operations', () => {
         text: 'Second message',
         user: 'user123',
       });
+
+      await waitForTimestampTick();
 
       await saveMessage(mockCtx, {
         messageId: 'msg3',
@@ -404,7 +423,7 @@ describe('Message Operations', () => {
       const result = await saveMessage(mockCtx, mockMessageData);
 
       expect(result?.messageId).toBe('msg123');
-      expect(result?.expiredAt).toBeNull();
+      expect(result?.expiredAt).toBeUndefined();
     });
 
     it('should use custom retention period from config', async () => {
@@ -485,6 +504,40 @@ describe('Message Operations', () => {
       const result = await saveMessage(mockCtx, mockMessageData);
       expect(result?.expiredAt).toBeDefined();
       expect(result?.expiredAt).toBeInstanceOf(Date);
+    });
+
+    it('should mark retained message non-temporary when retentionMode is ALL and isTemporary is omitted', async () => {
+      mockCtx.isTemporary = undefined;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.ALL,
+      };
+
+      const result = await saveMessage(mockCtx, mockMessageData);
+
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.isTemporary).toBe(false);
+    });
+
+    it('should preserve existing temporary flag when retentionMode is ALL and isTemporary is omitted', async () => {
+      mockCtx.isTemporary = true;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.ALL,
+      };
+
+      const firstSave = await saveMessage(mockCtx, mockMessageData);
+
+      mockCtx.isTemporary = undefined;
+      const secondSave = await saveMessage(mockCtx, {
+        ...mockMessageData,
+        text: 'Updated text',
+      });
+
+      expect(firstSave?.isTemporary).toBe(true);
+      expect(secondSave?.text).toBe('Updated text');
+      expect(secondSave?.isTemporary).toBe(true);
+      expect(secondSave?.expiredAt).toBeDefined();
     });
 
     it('should not set expiredAt when retentionMode is temporary and not isTemporary', async () => {
@@ -591,6 +644,22 @@ describe('Message Operations', () => {
       expect(new Date(secondSave?.expiredAt ?? 0).getTime()).toBeGreaterThan(
         new Date(originalExpiredAt ?? 0).getTime(),
       );
+    });
+
+    it('should preserve temporary retention when saving without isTemporary', async () => {
+      mockCtx.interfaceConfig = { temporaryChatRetention: 24 };
+
+      mockCtx.isTemporary = true;
+      const firstSave = await saveMessage(mockCtx, mockMessageData);
+      const originalExpiredAt = firstSave?.expiredAt;
+
+      mockCtx.isTemporary = undefined;
+      const updatedData = { ...mockMessageData, text: 'Updated text' };
+      const secondSave = await saveMessage(mockCtx, updatedData);
+
+      expect(secondSave?.text).toBe('Updated text');
+      expect(secondSave?.isTemporary).toBe(true);
+      expect(secondSave?.expiredAt).toEqual(originalExpiredAt);
     });
 
     it('should handle bulk operations with temporary messages', async () => {

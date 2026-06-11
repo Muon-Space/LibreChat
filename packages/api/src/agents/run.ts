@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { Run, Providers, Constants } from '@librechat/agents';
 import {
   KnownEndpoints,
+  MAX_SUBAGENT_DEPTH,
+  MAX_SUBAGENT_RUN_CONFIGS,
   extractEnvVariable,
   providerEndpointMap,
   normalizeEndpointName,
@@ -24,6 +26,7 @@ import type {
   Agent,
   AgentModelParameters,
   AgentSubagentsConfig,
+  ReasoningResponseKey,
   SummarizationConfig,
 } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
@@ -32,6 +35,7 @@ import type * as t from '~/types';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { resolveHeaders, createSafeUser } from '~/utils/env';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
+import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
 
 /** Expected shape of JSON tool search results */
@@ -210,6 +214,8 @@ const customProviders = new Set([
   KnownEndpoints.ollama,
 ]);
 
+type AgentReasoningKey = 'reasoning_content' | 'reasoning';
+
 function includesOpenRouter(value?: string | null): boolean {
   return typeof value === 'string' && value.toLowerCase().includes(KnownEndpoints.openrouter);
 }
@@ -218,8 +224,13 @@ export function getReasoningKey(
   provider: Providers,
   llmConfig: t.RunLLMConfig,
   agentEndpoint?: string | null,
-): 'reasoning_content' | 'reasoning' {
-  let reasoningKey: 'reasoning_content' | 'reasoning' = 'reasoning_content';
+  customReasoningKey?: ReasoningResponseKey,
+): AgentReasoningKey {
+  if (customReasoningKey) {
+    return customReasoningKey as AgentReasoningKey;
+  }
+
+  let reasoningKey: AgentReasoningKey = 'reasoning_content';
   if (provider === Providers.GOOGLE) {
     reasoningKey = 'reasoning';
   } else if (
@@ -234,6 +245,38 @@ export function getReasoningKey(
     reasoningKey = 'reasoning';
   }
   return reasoningKey;
+}
+
+const DEEPSEEK_MODEL_PATTERN = /^deepseek(?:[-/]|$)/i;
+const OPENROUTER_LATEST_ROUTING_PREFIX = /^~/;
+
+function matchesDeepSeekModel(model?: string | null): boolean {
+  if (typeof model !== 'string' || model.length === 0) {
+    return false;
+  }
+  return DEEPSEEK_MODEL_PATTERN.test(model.replace(OPENROUTER_LATEST_ROUTING_PREFIX, ''));
+}
+
+/**
+ * Whether the (provider, model) pair targets DeepSeek's thinking-mode
+ * tool-calling contract, which requires `reasoning_content` to be replayed
+ * on every prior assistant message that emitted `tool_calls`.
+ * @see https://api-docs.deepseek.com/guides/thinking_mode#tool-calls
+ */
+export function isDeepSeekReasoningProvider(
+  provider: string | Providers | undefined | null,
+  model?: string | null,
+): boolean {
+  if (typeof provider === 'string' && provider.length > 0) {
+    const normalized = provider.toLowerCase();
+    if (normalized === Providers.DEEPSEEK) {
+      return true;
+    }
+    if (normalized === Providers.OPENROUTER) {
+      return matchesDeepSeekModel(model);
+    }
+  }
+  return matchesDeepSeekModel(model);
 }
 
 type RunAgent = Omit<Agent, 'tools'> & {
@@ -259,6 +302,8 @@ type RunAgent = Omit<Agent, 'tools'> & {
   codeEnvAvailable?: boolean;
   /** Optional per-agent summarization overrides */
   summarization?: SummarizationConfig;
+  /** Response field to read model reasoning from for custom OpenAI-compatible endpoints. */
+  reasoningKey?: ReasoningResponseKey;
   /**
    * Maximum characters allowed in a single tool result before truncation.
    * Overrides the default computed from maxContextTokens.
@@ -547,6 +592,38 @@ function computeEffectiveMaxContextTokens(
 /** Identifier for the self-spawn subagent (reuses parent's AgentInputs in an isolated child graph). */
 const SELF_SUBAGENT_TYPE = 'self';
 
+interface SubagentBuildState {
+  configCount: number;
+  rootAgentIds: string[];
+}
+
+function countSubagentConfig(state: SubagentBuildState): void {
+  state.configCount += 1;
+  if (state.configCount > MAX_SUBAGENT_RUN_CONFIGS) {
+    logger.warn('[createRun] Subagent run configuration limit exceeded', {
+      expandedConfigCount: state.configCount,
+      maxSubagentRunConfigs: MAX_SUBAGENT_RUN_CONFIGS,
+      rootAgentIds: state.rootAgentIds,
+    });
+    throw new Error(
+      `Subagent run configuration exceeds the maximum of ${MAX_SUBAGENT_RUN_CONFIGS} expanded entries.`,
+    );
+  }
+}
+
+function assertSubagentDepth(depth: number, agentId: string): void {
+  if (depth > MAX_SUBAGENT_DEPTH) {
+    logger.warn('[createRun] Subagent graph depth limit exceeded', {
+      agentId,
+      depth,
+      maxSubagentDepth: MAX_SUBAGENT_DEPTH,
+    });
+    throw new Error(
+      `Subagent graph exceeds the maximum depth of ${MAX_SUBAGENT_DEPTH} at agent ${agentId}.`,
+    );
+  }
+}
+
 /**
  * Recursive any-true check across the agent tree: returns `true` if this
  * agent or any subagent (transitively) has the per-agent codeenv gate
@@ -559,14 +636,17 @@ const SELF_SUBAGENT_TYPE = 'self';
  * run — without it, the subagent's `{{tool<idx>turn<turn>}}`
  * placeholders would pass through to the shell unsubstituted.
  *
- * Cycle-safe via a `visited` set, mirroring `buildSubagentConfigs`'s
- * `ancestors` pattern. The bash tool description itself is still gated
- * per-agent in `initializeAgent`, so only agents that actually have
- * bash registered learn the `{{…}}` syntax — broadening the run-level
+ * Cycle-safe via a `visited` set. The bash tool description itself is
+ * still gated per-agent in `initializeAgent`, so only agents that actually
+ * have bash registered learn the `{{…}}` syntax — broadening the run-level
  * registry gate doesn't broaden the model-facing surface.
  */
-function anyAgentHasCodeEnv(agents: RunAgent[], visited: Set<string> = new Set()): boolean {
-  for (const agent of agents) {
+function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
+  const visited = new Set<string>();
+  const pending = [...agents];
+
+  for (let index = 0; index < pending.length; index++) {
+    const agent = pending[index];
     if (visited.has(agent.id)) {
       continue;
     }
@@ -574,11 +654,10 @@ function anyAgentHasCodeEnv(agents: RunAgent[], visited: Set<string> = new Set()
     if (agent.codeEnvAvailable === true) {
       return true;
     }
-    if (
-      agent.subagentAgentConfigs != null &&
-      anyAgentHasCodeEnv(agent.subagentAgentConfigs, visited)
-    ) {
-      return true;
+    for (const child of agent.subagentAgentConfigs ?? []) {
+      if (!visited.has(child.id)) {
+        pending.push(child);
+      }
     }
   }
   return false;
@@ -593,7 +672,9 @@ function buildSubagentConfigs(
   agent: RunAgent,
   agentInput: AgentInputs,
   toInput: (child: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
+  state: SubagentBuildState,
   ancestors: Set<string> = new Set(),
+  depth = 0,
 ): SubagentConfig[] {
   if (!agent.subagents?.enabled) {
     return [];
@@ -604,6 +685,7 @@ function buildSubagentConfigs(
 
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
+    countSubagentConfig(state);
     configs.push({
       self: true,
       type: SELF_SUBAGENT_TYPE,
@@ -627,6 +709,9 @@ function buildSubagentConfigs(
     if (ancestors.has(child.id)) {
       continue;
     }
+    const childDepth = depth + 1;
+    assertSubagentDepth(childDepth, child.id);
+    countSubagentConfig(state);
     /**
      * `buildAgentInput` applies parent-run context (initialSummary +
      * discoveredTools) to the returned AgentInputs *and* to the
@@ -649,7 +734,14 @@ function buildSubagentConfigs(
      * `subagentConfigs`, and that only runs for the outer agents in
      * `agents[]`. Cycle-safe via `nextAncestors`.
      */
-    const grandchildConfigs = buildSubagentConfigs(child, childInputs, toInput, nextAncestors);
+    const grandchildConfigs = buildSubagentConfigs(
+      child,
+      childInputs,
+      toInput,
+      state,
+      nextAncestors,
+      childDepth,
+    );
     if (grandchildConfigs.length > 0) {
       childInputs.subagentConfigs = grandchildConfigs;
     }
@@ -755,6 +847,10 @@ export async function createRun({
     );
 
     const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
+    const hasExplicitStreamUsage = Object.prototype.hasOwnProperty.call(
+      modelParameters ?? {},
+      'streamUsage',
+    );
     const llmConfig = Object.assign(
       {
         provider,
@@ -798,7 +894,9 @@ export async function createRun({
       customProviders.has(agent.provider) ||
       (agent.provider === Providers.OPENAI && agent.endpoint !== agent.provider)
     ) {
-      llmConfig.streamUsage = false;
+      if (!hasExplicitStreamUsage) {
+        llmConfig.streamUsage = false;
+      }
       llmConfig.usage = true;
     }
 
@@ -859,7 +957,7 @@ export async function createRun({
       agent.maxContextTokens,
     );
 
-    const reasoningKey = getReasoningKey(provider, llmConfig, agent.endpoint);
+    const reasoningKey = getReasoningKey(provider, llmConfig, agent.endpoint, agent.reasoningKey);
     return {
       provider,
       reasoningKey,
@@ -884,9 +982,18 @@ export async function createRun({
   };
 
   const agentInputs: AgentInputs[] = [];
+  const subagentBuildState: SubagentBuildState = {
+    configCount: 0,
+    rootAgentIds: agents.map((agent) => agent.id),
+  };
   for (const agent of agents) {
     const agentInput = buildAgentInput(agent);
-    const subagentConfigs = buildSubagentConfigs(agent, agentInput, buildAgentInput);
+    const subagentConfigs = buildSubagentConfigs(
+      agent,
+      agentInput,
+      buildAgentInput,
+      subagentBuildState,
+    );
     if (subagentConfigs.length > 0) {
       agentInput.subagentConfigs = subagentConfigs;
     }
@@ -924,16 +1031,25 @@ export async function createRun({
    */
   const enableToolOutputReferences = anyAgentHasCodeEnv(agents);
 
-  return Run.create({
+  const run = await Run.create({
     runId,
     graphConfig,
     tokenCounter,
     customHandlers,
-    indexTokenCountMap,
     initialSessions,
     calibrationRatio,
+    indexTokenCountMap,
+    eagerEventToolExecution: { enabled: true },
+    // Derive the Langfuse trace id deterministically from runId so message
+    // feedback can be scored against the trace without a lookup (see the
+    // feedback route in api/server/routes/messages.js). No-op unless Langfuse
+    // tracing is enabled. Requires @librechat/agents >= 3.2.21.
+    langfuse: { deterministicTraceId: true },
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },
     }),
   });
+
+  applyTestRunHook(run, { messages, agents });
+  return run;
 }

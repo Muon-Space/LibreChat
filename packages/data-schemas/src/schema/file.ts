@@ -137,6 +137,9 @@ const file: Schema<IMongoFile> = new Schema(
       },
     },
     expiresAt: {
+      /* Short-lived upload TTL managed by MongoDB. This is separate from
+       * retention-scoped `expiredAt`, which is swept by application code
+       * after storage cleanup succeeds. */
       type: Date,
       expires: 3600, // 1 hour in seconds
     },
@@ -145,6 +148,8 @@ const file: Schema<IMongoFile> = new Schema(
       index: true,
     },
     expiredAt: {
+      /* Retention deadline for persisted files. The file sweep deletes the
+       * backing storage first, then removes this metadata record. */
       type: Date,
     },
   },
@@ -153,7 +158,7 @@ const file: Schema<IMongoFile> = new Schema(
   },
 );
 
-file.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+file.index({ expiredAt: 1 });
 file.index({ createdAt: 1, updatedAt: 1 });
 file.index(
   { filename: 1, conversationId: 1, context: 1, tenantId: 1 },
