@@ -428,12 +428,6 @@ endpoints:
   #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "actions", "tools"]
-  #   # (optional) Tool Approval - require user approval before tool calls execute
-  #   # toolApproval:
-  #   #   # Set to true to require approval for all tools, or provide an array of tool patterns
-  #   #   required: true  # or: ["web_search", "mcp:*", "image_*"]
-  #   #   # (optional) Exclude specific tools from approval requirement
-  #   #   excluded: ["calculator", "google"]
 
   # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
   # Forwarded on every request to the provider (or an AI gateway / reverse proxy

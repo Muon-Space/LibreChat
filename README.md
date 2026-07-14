@@ -2,12 +2,77 @@
 
 This fork implements these PRs:
 - chore: muon-specific workflows, README [#27](https://github.com/Muon-Space/LibreChat/pull/27)
-- feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)
-  - pending review upstream
 - chore: sync upstream v0.8.6 [#31](https://github.com/Muon-Space/LibreChat/pull/31)
 - chore: sync upstream v0.8.7 [#32](https://github.com/Muon-Space/LibreChat/pull/32)
+- chore: sync upstream/main post-v0.8.7; adopt native HITL tool approval [#33](https://github.com/Muon-Space/LibreChat/pull/33)
+- ~~feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)~~
+  - superseded: upstream shipped native HITL tool approval post-v0.8.7; adopted wholesale in #33
 - ~~feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)~~
   - superseded: upstream merged and hardened the same feature; adopted wholesale in #31
+
+## Upstream sync post-v0.8.7 HEAD (2026-07-14, PR #33)
+
+Merged `danny-avila/LibreChat` @ `cf9a426d2` (upstream/main HEAD, 80 commits past the
+v0.8.7 tag). **This is a pre-release snapshot** — we are intentionally tracking main to
+adopt upstream's native HITL early, and we commit to reconciling with the v0.8.8 release
+tag when it emerges (expected to be a routine sync since our delta is now minimal).
+
+### Tool approval (#28) retired → upstream native HITL
+
+Upstream's human-in-the-loop runtime (danny-avila#12938, #13942, #14025, #14139)
+supersedes our fork's tool approval. It uses the **same yaml key**
+(`endpoints.agents.toolApproval`) with an incompatible, richer schema, so coexistence
+was impossible — resolved exactly like data retention in #31: take upstream, drop ours.
+The fork delta vs upstream is now **workflows + README only**.
+
+What upstream's version adds over ours: durable pause/resume across replicas/restarts
+(Mongo checkpoints) instead of our 3-minute in-request SSE wait, deny rules, argument
+editing before approval, `ask_user_question`, programmatic policy hooks, and SDK-level
+interception that uniformly covers regular, MCP, and PTC tool calls.
+
+**Config migration (deployed librechat.yaml) — REQUIRED when upgrading:**
+
+Old (fork) schema → new (upstream) schema:
+
+```yaml
+# BEFORE (fork #28)               # AFTER (upstream HITL)
+toolApproval:                     toolApproval:
+  required: true                    enabled: true
+  excluded: ["calculator"]          mode: default          # unmatched tools -> ask
+                                    allow: ["calculator"]  # skip approval
+```
+
+Semantics of the new policy (mirrors Claude Code's permission vocabulary):
+- Precedence: `deny` → (`mode: bypass` → allow-all) → `allow` → `ask` → mode fallthrough
+  (`default` = ask, `dontAsk` = deny).
+- Patterns are anchored globs (`*` wildcard). MCP tool names are matched raw in
+  LibreChat's registered form `{tool}_mcp_{server}` — e.g. all tools of server
+  `github` = `*_mcp_github`, all MCP tools = `*_mcp_*`.
+- Our old `required: true` + `excluded: [...]` form maps exactly to
+  `enabled: true, mode: default, allow: [...]`.
+- ⚠️ Our old `required: [list]` form ("ask only for these, run everything else") has
+  **no exact static equivalent**: `allow` beats `ask`, and only `bypass` auto-approves
+  unmatched tools but `bypass` also skips `ask`. If that shape is needed, use upstream's
+  programmatic `hooks:` config (`toolApproval.hooks`), or accept `mode: default` with a
+  broad `allow` list.
+- HITL is **default-off**: without `enabled: true` no approval prompts happen at all.
+  Verify the deployed librechat.yaml is migrated in the same release as this image, or
+  tool gating silently disappears.
+
+### Ops notes for this sync (all additive)
+
+- With `toolApproval.enabled: true`, two new Mongo collections appear on demand:
+  `agent_checkpoints` + `agent_checkpoint_writes` (TTL-indexed, default 24h — tune via
+  `endpoints.agents.checkpointer.ttl`). Zero-config: defaults to the app's MongoDB.
+- New `toolfavorites` collection (unique compound index) and one new `sharedlinks`
+  index (`updatedAt: -1`) — autoIndex creates at boot; for `MONGO_AUTO_INDEX=false`:
+  ```js
+  db.toolfavorites.createIndex({ user: 1, itemType: 1, itemId: 1 }, { unique: true });
+  db.sharedlinks.createIndex({ updatedAt: -1 });
+  ```
+- Langfuse fanout is new and opt-in (`LANGFUSE_FANOUT_ENABLED`, separate compose/helm
+  overlays) — not part of our deployment.
+- `@librechat/agents` bumps to ^3.2.61 (carries the HITL/ToolPolicy machinery).
 
 ## Upstream sync v0.8.7 (2026-07-14, PR #32)
 

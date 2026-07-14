@@ -19,8 +19,6 @@ export * from './mcp/zod';
 export * from './mcp/errors';
 export * from './mcp/cache';
 export * from './mcp/tools';
-/* MCP Validation */
-export * from './mcp/validation';
 export * from './mcp/request';
 /* Utilities */
 export * from './mcp/utils';
@@ -53,6 +51,7 @@ export * from './prompts';
 export * from './projects';
 /* Skills */
 export * from './skills';
+export * from './favorites';
 /* Endpoints */
 export * from './endpoints';
 /* Files */
