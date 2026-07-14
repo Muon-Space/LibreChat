@@ -4,13 +4,13 @@ This fork implements these PRs:
 - chore: muon-specific workflows, README [#27](https://github.com/Muon-Space/LibreChat/pull/27)
 - chore: sync upstream v0.8.6 [#31](https://github.com/Muon-Space/LibreChat/pull/31)
 - chore: sync upstream v0.8.7 [#32](https://github.com/Muon-Space/LibreChat/pull/32)
-- chore: sync upstream/main post-v0.8.7; adopt native HITL tool approval (see below)
+- chore: sync upstream/main post-v0.8.7; adopt native HITL tool approval [#33](https://github.com/Muon-Space/LibreChat/pull/33)
 - ~~feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)~~
-  - superseded: upstream shipped native HITL tool approval post-v0.8.7; adopted wholesale (see below)
+  - superseded: upstream shipped native HITL tool approval post-v0.8.7; adopted wholesale in #33
 - ~~feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)~~
   - superseded: upstream merged and hardened the same feature; adopted wholesale in #31
 
-## Upstream sync post-v0.8.7 HEAD (2026-07-14)
+## Upstream sync post-v0.8.7 HEAD (2026-07-14, PR #33)
 
 Merged `danny-avila/LibreChat` @ `cf9a426d2` (upstream/main HEAD, 80 commits past the
 v0.8.7 tag). **This is a pre-release snapshot** — we are intentionally tracking main to
