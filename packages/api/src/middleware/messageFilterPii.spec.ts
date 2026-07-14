@@ -134,6 +134,52 @@ describe('messageFilterPii middleware', () => {
     expect(capturedRes.status).toBe(400);
   });
 
+  it('rejects with 400 when a quoted excerpt contains a blocked token (clean text)', () => {
+    const { capturedRes, nextCalls } = runMiddleware(
+      {},
+      { text: 'explain this', quotes: ['leaked sk-proj-FAKE1234567890ABCDEF here'] },
+    );
+    expect(nextCalls).toBe(0);
+    expect(capturedRes.status).toBe(400);
+    expect(capturedRes.body).toMatchObject({ error: 'message_filter_pii_block' });
+  });
+
+  it('scans quotes even when req.body.text is empty', () => {
+    const { capturedRes, nextCalls } = runMiddleware(
+      {},
+      { text: '', quotes: ['api-key: foo123bar'] },
+    );
+    expect(nextCalls).toBe(0);
+    expect(capturedRes.status).toBe(400);
+  });
+
+  it('rejects a secret split across a quote and the typed text (merged scan)', () => {
+    // Neither piece matches the api-key pattern alone, but the merged
+    // `> api-key:\n\nsecret` the model receives does (the pattern allows whitespace).
+    const { capturedRes, nextCalls } = runMiddleware({}, { text: 'secret', quotes: ['api-key:'] });
+    expect(nextCalls).toBe(0);
+    expect(capturedRes.status).toBe(400);
+    expect(capturedRes.body).toMatchObject({ error: 'message_filter_pii_block' });
+  });
+
+  it('passes through when neither text nor quotes match', () => {
+    const { capturedRes, nextCalls } = runMiddleware(
+      {},
+      { text: 'hello world', quotes: ['a clean excerpt', 'another clean one'] },
+    );
+    expect(nextCalls).toBe(1);
+    expect(capturedRes.status).toBeUndefined();
+  });
+
+  it('ignores non-string quote entries without throwing', () => {
+    const { capturedRes, nextCalls } = runMiddleware(
+      {},
+      { text: 'hello world', quotes: [null, 42, '', 'clean'] },
+    );
+    expect(nextCalls).toBe(1);
+    expect(capturedRes.status).toBeUndefined();
+  });
+
   it('returns the same compiled pattern array for repeat calls with the same config (memoization)', () => {
     const config: MessageFilterPiiConfig = {
       customPatterns: [{ id: 'org', label: 'Org token', regex: '\\bORG-[A-Z0-9]{6,}' }],
@@ -173,15 +219,28 @@ describe('findPiiMatchInMessages', () => {
     ).toBeNull();
   });
 
-  it('skips non-user messages', () => {
+  it('matches a system-role message (remote APIs accept caller-supplied system roles)', () => {
     const hit = findPiiMatchInMessages(
-      [
-        { role: 'system', content: 'sk-proj-FAKE1234567890ABCDEF' },
-        { role: 'assistant', content: 'sk-proj-FAKE1234567890ABCDEF' },
-      ],
+      [{ role: 'system', content: 'system primer with sk-proj-FAKE1234567890ABCDEF embedded' }],
       {},
     );
-    expect(hit).toBeNull();
+    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
+  });
+
+  it('matches an assistant-role message (callers can include attacker-controlled history)', () => {
+    const hit = findPiiMatchInMessages(
+      [{ role: 'assistant', content: 'sk-proj-FAKE1234567890ABCDEF' }],
+      {},
+    );
+    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
+  });
+
+  it('matches a tool-role message', () => {
+    const hit = findPiiMatchInMessages(
+      [{ role: 'tool', content: 'tool reply leaking sk-proj-FAKE1234567890ABCDEF' }],
+      {},
+    );
+    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
   });
 
   it('matches a string-content user message', () => {

@@ -5,8 +5,46 @@ This fork implements these PRs:
 - feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)
   - pending review upstream
 - chore: sync upstream v0.8.6 [#31](https://github.com/Muon-Space/LibreChat/pull/31)
+- chore: sync upstream v0.8.7 [#32](https://github.com/Muon-Space/LibreChat/pull/32)
 - ~~feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)~~
   - superseded: upstream merged and hardened the same feature; adopted wholesale in #31
+
+## Upstream sync v0.8.7 (2026-07-14, PR #32)
+
+Merged `danny-avila/LibreChat` @ `9e74cc0e5` (v0.8.7 release tag, 111 commits past
+the v0.8.6 sync point).
+
+- **Tool approval (#28) preserved** — upstream did not touch `MCP.js` in this range;
+  `ToolService.js` changes were execute_code/bash authorization hardening and did not
+  add new tool-execution paths, so both wrap sites (agent + PTC) still cover everything.
+- **Heads-up for the next sync:** upstream is building native HITL tool approval
+  (`packages/api/src/agents/hitl/` — danny-avila#12938, #13942, #14025, #14139), all
+  landed *after* the v0.8.7 tag. Expect it to supersede our tool approval in v0.8.8+
+  the same way retention was superseded in #31 — resolve take-upstream and migrate the
+  `toolApproval` yaml config to upstream's policy hooks when that happens.
+- Workflow policy reapplied: removed upstream's new `retry-docker-builds`,
+  `config-review`, `docker-smoke`, `playwright-mock`, `sync-helm-chart-tags` workflows.
+
+### Ops notes for v0.8.7 (no destructive migration)
+
+- New `auditlogs` collection with 4 indexes — created at boot by autoIndex. Only if
+  the deployment runs `MONGO_AUTO_INDEX=false`, create manually:
+  ```js
+  db.auditlogs.createIndex({ chainKey: 1, seq: 1 }, { unique: true });
+  db.auditlogs.createIndex({ chainKey: 1, createdAt: -1, seq: -1 });
+  db.auditlogs.createIndex({ chainKey: 1, category: 1, createdAt: -1 });
+  db.auditlogs.createIndex({ chainKey: 1, 'target.type': 1, 'target.id': 1, createdAt: -1 });
+  ```
+- Schema changes are additive only (convo `pinned`, message `quotes`, sharedlink
+  file snapshots, preset `promptCacheTtl`/`url_context`). No index drops/changes to
+  existing collections.
+- New env vars, all optional for our deployment: `ADMIN_PANEL_SESSION_SECRET` (only
+  needed if running upstream's bundled admin panel via docker-compose — we don't),
+  `SHARED_LINKS_SNAPSHOT_FILES` (default **enabled**: shared links now snapshot file
+  metadata so viewers can preview files; set `false` or
+  `interface.sharedLinks.snapshotFiles: false` to opt out),
+  `FILE_PREVIEW_MAX_EXTRACT_BYTES`, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` support.
+- Config schema version is now 1.3.13; our `toolApproval` block is unchanged.
 
 ## Upstream sync v0.8.6 (2026-06-11, PR #31)
 

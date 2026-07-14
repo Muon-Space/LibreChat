@@ -21,6 +21,7 @@ export * from './mcp/cache';
 export * from './mcp/tools';
 /* MCP Validation */
 export * from './mcp/validation';
+export * from './mcp/request';
 /* Utilities */
 export * from './mcp/utils';
 export * from './utils';
@@ -69,6 +70,7 @@ export * from './cache';
 /* Shared Links */
 export * from './shared-links/access';
 export * from './shared-links/service';
+export * from './shared-links/config';
 /* Stream */
 export * from './stream';
 /* Diagnostics */
