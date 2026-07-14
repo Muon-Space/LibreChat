@@ -5,10 +5,11 @@ This fork implements these PRs:
 - feat: implement tool approval checks for agent tool calls [#28](https://github.com/Muon-Space/LibreChat/pull/28)
   - pending review upstream
 - chore: sync upstream v0.8.6 [#31](https://github.com/Muon-Space/LibreChat/pull/31)
+- chore: sync upstream v0.8.7 [#32](https://github.com/Muon-Space/LibreChat/pull/32)
 - ~~feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)~~
   - superseded: upstream merged and hardened the same feature; adopted wholesale in #31
 
-## Upstream sync v0.8.7 (2026-07-14)
+## Upstream sync v0.8.7 (2026-07-14, PR #32)
 
 Merged `danny-avila/LibreChat` @ `9e74cc0e5` (v0.8.7 release tag, 111 commits past
 the v0.8.6 sync point).
