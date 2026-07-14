@@ -1,22 +1,15 @@
 const { tool } = require('@librechat/agents/langchain/tools');
 const { logger, getTenantId } = require('@librechat/data-schemas');
-const {
-  Providers,
-  StepTypes,
-  GraphEvents,
-  Constants: AgentConstants,
-} = require('@librechat/agents');
+const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
   PENDING_STALE_MS,
   MCPOAuthHandler,
-  requiresApproval,
   isMCPDomainAllowed,
   normalizeServerName,
   normalizeJsonSchema,
   GenerationJobManager,
   resolveJsonSchemaRefs,
-  MCPToolCallValidationHandler,
   sanitizeGeminiSchema,
   buildMCPAuthStepId,
   buildMCPAuthToolCall,
@@ -33,7 +26,6 @@ const {
   Time,
   CacheKeys,
   Constants,
-  EModelEndpoint,
   Permissions,
   PermissionTypes,
   isAssistantsEndpoint,
@@ -773,8 +765,6 @@ function createToolInstance({
 
   const normalizedToolKey = `${toolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`;
 
-  let cachedNeedsApproval;
-
   /** @type {(toolArguments: Object | string, config?: GraphRunnableConfig) => Promise<unknown>} */
   const _call = async (toolArguments, config) => {
     const effectiveUser = config?.configurable?.user ?? capturedUser;
@@ -824,81 +814,6 @@ function createToolInstance({
         derivedSignal.addEventListener('abort', abortHandler, { once: true });
       }
 
-      // Tool call validation flow - only if tool requires approval
-      if (cachedNeedsApproval === undefined) {
-        const appConfig = await getAppConfig({
-          role: config?.configurable?.user?.role,
-          userId,
-          tenantId: config?.configurable?.user?.tenantId,
-        });
-        const toolApprovalConfig = appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval;
-        cachedNeedsApproval = requiresApproval(normalizedToolKey, toolApprovalConfig);
-      }
-      const needsApproval = cachedNeedsApproval;
-
-      if (needsApproval) {
-        const { validationId, flowMetadata } =
-          await MCPToolCallValidationHandler.initiateValidationFlow(
-            userId,
-            serverName,
-            toolName,
-            typeof toolArguments === 'string' ? { input: toolArguments } : toolArguments,
-          );
-
-        const validationFlowType = MCPToolCallValidationHandler.getFlowType();
-        await flowManager.initFlow(validationId, validationFlowType, flowMetadata);
-
-        /** @type {{ id: string; delta: AgentToolCallDelta }} */
-        const validationData = {
-          id: stepId,
-          delta: {
-            type: StepTypes.TOOL_CALLS,
-            tool_calls: [{ ...toolCall, args: '' }],
-            validation: validationId,
-            expires_at: Date.now() + Time.ONE_MINUTE * 3,
-          },
-        };
-
-        if (streamId) {
-          await GenerationJobManager.emitChunk(streamId, {
-            event: GraphEvents.ON_RUN_STEP_DELTA,
-            data: validationData,
-          });
-        } else {
-          sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
-        }
-
-        try {
-          await flowManager.createFlow(
-            validationId,
-            validationFlowType,
-            flowMetadata,
-            derivedSignal,
-          );
-
-          /** @type {{ id: string; delta: AgentToolCallDelta }} */
-          const successData = {
-            id: stepId,
-            delta: {
-              type: StepTypes.TOOL_CALLS,
-              tool_calls: [{ ...toolCall }],
-            },
-          };
-          if (streamId) {
-            await GenerationJobManager.emitChunk(streamId, {
-              event: GraphEvents.ON_RUN_STEP_DELTA,
-              data: successData,
-            });
-          } else {
-            sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: successData });
-          }
-        } catch (_validationError) {
-          throw new Error(
-            `Tool call validation required for ${serverName}/${toolName}. User rejected or validation timed out.`,
-          );
-        }
-      }
-
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
@@ -939,18 +854,6 @@ function createToolInstance({
         `[MCP][${serverName}][${toolName}][User: ${userId}] Error calling MCP tool:`,
         error,
       );
-
-      /** Validation error - user rejected or timeout */
-      const isValidationError =
-        error.message?.includes('validation required') ||
-        error.message?.includes('User rejected') ||
-        error.message?.includes('mcp_tool_validation');
-
-      if (isValidationError) {
-        throw new Error(
-          `Tool call for ${serverName}/${toolName} was not approved by the user. Wait for next instructions.`,
-        );
-      }
 
       /** OAuth error, provide a helpful message */
       const isOAuthError =

@@ -26,6 +26,7 @@ import {
   initSubagentAggregatorState,
   initSubagentTickerState,
 } from '~/utils/subagentContent';
+import { isAskUserQuestionPart } from '~/utils/approval';
 import { subagentProgressByToolCallId } from '~/store';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 
@@ -339,6 +340,19 @@ export default function useStepHandler({
       updatedContent = updatedContent.filter((part) => !isOAuthToolCallContent(part));
     }
 
+    /**
+     * The synthetic ask-user-question card is pause-scoped UI appended at the end
+     * of the content — exactly the ABSOLUTE index the resumed segment streams
+     * into. Once real content arrives for that slot the pause is over: displace
+     * the card (same displacement pattern as the OAuth prompt above) instead of
+     * dropping the incoming part as a type mismatch. Covers the streaming
+     * handler's own in-flight message copy, reconnecting tabs, and other devices
+     * — the store-level strip on answer submit can't reach those.
+     */
+    if (isAskUserQuestionPart(updatedContent[index])) {
+      updatedContent = updatedContent.filter((part) => !isAskUserQuestionPart(part));
+    }
+
     if (!updatedContent[index] && contentType !== ContentTypes.TOOL_CALL) {
       updatedContent[index] = { type: contentPart.type as AllContentTypes };
     }
@@ -433,7 +447,6 @@ export default function useStepHandler({
         args,
         type: ToolCallTypes.TOOL_CALL,
         auth: contentPart.tool_call.auth,
-        validation: contentPart.tool_call.validation,
         expires_at: contentPart.tool_call.expires_at,
       };
 
@@ -896,11 +909,6 @@ export default function useStepHandler({
 
             if (runStepDelta.delta.auth != null) {
               contentPart.tool_call.auth = runStepDelta.delta.auth;
-              contentPart.tool_call.expires_at = runStepDelta.delta.expires_at;
-            }
-
-            if (runStepDelta.delta.validation != null) {
-              contentPart.tool_call.validation = runStepDelta.delta.validation;
               contentPart.tool_call.expires_at = runStepDelta.delta.expires_at;
             }
 

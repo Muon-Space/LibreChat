@@ -2,8 +2,6 @@ const { logger, redactMessage } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
-  StepTypes,
-  GraphEvents,
   createToolSearch,
   createBashExecutionTool,
   Constants: AgentConstants,
@@ -12,15 +10,12 @@ const {
 const {
   sendEvent,
   getToolkitKey,
-  requiresApproval,
-  getToolServerName,
   getUserMCPAuthMap,
   loadToolDefinitions,
   GenerationJobManager,
   isActionDomainAllowed,
   buildWebSearchContext,
   buildImageToolContext,
-  MCPToolCallValidationHandler,
   buildToolClassification,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
@@ -33,6 +28,7 @@ const {
   buildMCPAuthRunStepDeltaEvent,
   buildMCPAuthRunStepCompletedEvent,
   isFileAuthoringToolDefinition,
+  ASK_USER_QUESTION_TOOL_NAME,
 } = require('@librechat/api');
 const {
   Time,
@@ -512,7 +508,12 @@ async function processRequiredActions(client, requiredActions) {
  * }>} The agent tools and registry.
  */
 /** Native LibreChat tools that are not in the manifest */
-const nativeTools = new Set([Tools.execute_code, Tools.file_search, Tools.web_search]);
+const nativeTools = new Set([
+  Tools.execute_code,
+  Tools.file_search,
+  Tools.web_search,
+  Tools.memory,
+]);
 
 /** Checks if a tool name is a known built-in tool */
 const isBuiltInTool = (toolName) =>
@@ -575,6 +576,12 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
     }
     if (tool === Tools.web_search) {
       return checkCapability(AgentCapabilities.web_search);
+    }
+    if (tool === Tools.memory) {
+      return checkCapability(AgentCapabilities.memory);
+    }
+    if (tool === ASK_USER_QUESTION_TOOL_NAME) {
+      return checkCapability(AgentCapabilities.ask_user_question);
     }
     if (isActionTool(tool)) {
       return actionsEnabled;
@@ -1063,97 +1070,6 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
  * @param {ServerRequest} params.req - The request object
  * @param {ServerResponse} params.res - The response object
  * @param {Object} params.agent - The agent configuration
- */
-
-/**
- * Wraps a tool with approval validation flow.
- * The wrapped tool sends an SSE event and waits for user approval before executing.
- * @param {Object} params
- * @param {Object} params.tool - The tool to wrap
- * @param {ServerResponse} params.res - The response object for SSE
- * @param {string|null} params.streamId - Stream ID for resumable mode
- * @returns {Object} The wrapped tool
- */
-function wrapToolWithApproval({ tool, res, streamId }) {
-  const originalCall = tool._call.bind(tool);
-  const toolName = tool.name;
-  const serverName = getToolServerName(toolName);
-
-  tool._call = async (toolArguments, runManager, parentConfig) => {
-    const userId = parentConfig?.configurable?.user?.id || parentConfig?.configurable?.user_id;
-
-    const flowsCache = getLogStores(CacheKeys.FLOWS);
-    const flowManager = getFlowStateManager(flowsCache);
-    const derivedSignal = parentConfig?.signal ? AbortSignal.any([parentConfig.signal]) : undefined;
-
-    const { args: _args, stepId, ...toolCall } = parentConfig?.toolCall ?? {};
-
-    const { validationId, flowMetadata } =
-      await MCPToolCallValidationHandler.initiateValidationFlow(
-        userId,
-        serverName,
-        toolName,
-        typeof toolArguments === 'string' ? { input: toolArguments } : toolArguments,
-      );
-
-    const validationFlowType = MCPToolCallValidationHandler.getFlowType();
-    await flowManager.initFlow(validationId, validationFlowType, flowMetadata);
-
-    const validationData = {
-      id: stepId,
-      delta: {
-        type: StepTypes.TOOL_CALLS,
-        tool_calls: [{ ...toolCall, args: '' }],
-        validation: validationId,
-        expires_at: Date.now() + Time.ONE_MINUTE * 3,
-      },
-    };
-
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, {
-        event: GraphEvents.ON_RUN_STEP_DELTA,
-        data: validationData,
-      });
-    } else {
-      sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: validationData });
-    }
-
-    try {
-      await flowManager.createFlow(validationId, validationFlowType, flowMetadata, derivedSignal);
-
-      const successData = {
-        id: stepId,
-        delta: {
-          type: StepTypes.TOOL_CALLS,
-          tool_calls: [{ ...toolCall }],
-        },
-      };
-      if (streamId) {
-        await GenerationJobManager.emitChunk(streamId, {
-          event: GraphEvents.ON_RUN_STEP_DELTA,
-          data: successData,
-        });
-      } else {
-        sendEvent(res, { event: GraphEvents.ON_RUN_STEP_DELTA, data: successData });
-      }
-    } catch (_validationError) {
-      throw new Error(
-        `Tool call validation required for ${toolName}. User rejected or validation timed out.`,
-      );
-    }
-
-    return await originalCall(toolArguments, runManager, parentConfig);
-  };
-
-  tool.requiresApproval = true;
-  return tool;
-}
-
-/**
- * @param {Object} params - Run params containing user and request information.
- * @param {ServerRequest} params.req - The server request
- * @param {ServerResponse} params.res - The server response
- * @param {Agent} params.agent - The Agent
  * @param {AbortSignal} [params.signal] - Abort signal
  * @param {Object} [params.tool_resources] - Tool resources
  * @param {string} [params.openAIApiKey] - OpenAI API key
@@ -1219,6 +1135,10 @@ async function loadAgentTools({
     } else if (tool === Tools.web_search) {
       includesWebSearch = checkCapability(AgentCapabilities.web_search);
       return includesWebSearch;
+    } else if (tool === Tools.memory) {
+      return checkCapability(AgentCapabilities.memory);
+    } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
+      return checkCapability(AgentCapabilities.ask_user_question);
     } else if (isActionTool(tool)) {
       return actionsEnabled;
     } else if (tool?.includes(Constants.mcp_delimiter)) {
@@ -1283,6 +1203,7 @@ async function loadAgentTools({
       loadedTools,
       userId: req.user.id,
       agentId: agent.id,
+      provider: agent.provider,
       agentToolOptions: agent.tool_options,
       deferredToolsEnabled,
       programmaticToolsEnabled,
@@ -1290,16 +1211,9 @@ async function loadAgentTools({
       authHeaders: () => getCodeApiAuthHeaders(req),
     });
 
-  const toolApprovalConfig = appConfig.endpoints?.[EModelEndpoint.agents]?.toolApproval;
   const agentTools = [];
   for (let i = 0; i < loadedTools.length; i++) {
-    let tool = loadedTools[i];
-
-    const needsApproval = requiresApproval(tool.name, toolApprovalConfig);
-    if (res && needsApproval && tool.mcp !== true) {
-      tool = wrapToolWithApproval({ tool, res, streamId });
-    }
-
+    const tool = loadedTools[i];
     if (tool.name && (tool.name === Tools.execute_code || tool.name === Tools.file_search)) {
       agentTools.push(tool);
       continue;
@@ -1309,7 +1223,7 @@ async function loadAgentTools({
       continue;
     }
 
-    if (tool.mcp === true || tool.requiresApproval === true) {
+    if (tool.mcp === true) {
       agentTools.push(tool);
       continue;
     }
@@ -1722,14 +1636,6 @@ async function loadToolsForExecution({
       `[loadToolsForExecution] Capability "${AgentCapabilities.actions}" disabled. ` +
         `Skipping action tool execution. User: ${req.user.id} | Agent: ${agent.id} | Tools: ${actionToolNames.join(', ')}`,
     );
-  }
-
-  const toolApprovalConfig = appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval;
-  for (let i = 0; i < allLoadedTools.length; i++) {
-    const tool = allLoadedTools[i];
-    if (res && tool.mcp !== true && requiresApproval(tool.name, toolApprovalConfig)) {
-      allLoadedTools[i] = wrapToolWithApproval({ tool, res, streamId });
-    }
   }
 
   if (isPTC && allLoadedTools.length > 0) {
