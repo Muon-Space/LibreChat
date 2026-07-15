@@ -10,6 +10,15 @@ This fork implements these PRs:
 - ~~feat: data retention for conversations, messages, files, toolcalls, and sharedlinks [#29](https://github.com/Muon-Space/LibreChat/pull/29)~~
   - superseded: upstream merged and hardened the same feature; adopted wholesale in #31
 
+## Upstream sync HEAD → release 8.0.1 (2026-07-15, direct merge)
+
+Merged `danny-avila/LibreChat` @ `4321f68f2` (33 commits since the #33 sync point)
+directly to main and tagged **8.0.1**. Routine: no toolApproval/checkpointer schema
+changes (deployed HITL config unaffected), no new Mongo indexes, README-only conflict.
+Notable: HITL hardening (ask_user_question resume #14254, Redis stream resume guard
+#14258), mid-run steering + queued messages (#14220), background tool calls (#14197),
+`@librechat/agents` v3.2.65, GPT-5.6 models, MCP session teardown/OAuth fixes.
+
 ## Upstream sync post-v0.8.7 HEAD (2026-07-14, PR #33)
 
 Merged `danny-avila/LibreChat` @ `cf9a426d2` (upstream/main HEAD, 80 commits past the
